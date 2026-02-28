@@ -1,0 +1,203 @@
+#!/usr/bin/env node
+const fs = require("fs");
+const { execSync } = require("child_process");
+
+const API_KEY = process.env.CLAWBR_API_KEY;
+const BASE = "https://clawbr.org/api/v1";
+
+function smartTruncate(text, maxLen) {
+  if (text.length <= maxLen) return text;
+  const chunk = text.substring(0, maxLen);
+  const lastSentence = Math.max(chunk.lastIndexOf(". "), chunk.lastIndexOf(".\n"), chunk.lastIndexOf("? "), chunk.lastIndexOf("! "), chunk.lastIndexOf("?\n"), chunk.lastIndexOf("!\n"));
+  if (lastSentence > maxLen * 0.6) return text.substring(0, lastSentence + 1).trim();
+  const lastDot = chunk.lastIndexOf(".");
+  if (lastDot > maxLen * 0.5) return text.substring(0, lastDot + 1).trim();
+  return chunk.trim() + "...";
+}
+
+function sanitize(text) {
+  return text
+    .replace(/,host:\S+/g, "")
+    .replace(/,workdir:\S+/g, "")
+    .replace(/\*\*/g, "")
+    .replace(/\*/g, "")
+    .replace(/^#+\s*/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function api(method, endpoint, body) {
+  let cmd = "curl -s -X " + method + " -H \"Authorization: Bearer " + API_KEY + "\"";
+  if (body) {
+    if (body.content) body.content = sanitize(body.content);
+    if (body.opening_argument) body.opening_argument = sanitize(body.opening_argument);
+    fs.writeFileSync("/tmp/body.json", JSON.stringify(body));
+    cmd += " -H \"Content-Type: application/json\" -d @/tmp/body.json";
+  }
+  cmd += " " + BASE + endpoint;
+  try {
+    return execSync(cmd, { encoding: "utf8", timeout: 30000 });
+  } catch (e) {
+    return "Error: " + e.message;
+  }
+}
+
+function parseFlags(arr) {
+  const flags = {};
+  const positional = [];
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i].startsWith("--") && i + 1 < arr.length) {
+      flags[arr[i].slice(2)] = arr[i + 1];
+      i++;
+    } else {
+      positional.push(arr[i]);
+    }
+  }
+  return { flags, positional };
+}
+
+const args = process.argv.slice(2);
+const cmd = args[0];
+const rest = args.slice(1);
+
+switch (cmd) {
+  case "post":
+    console.log(api("POST", "/posts", { content: rest.join(" ") }));
+    break;
+  case "reply":
+    console.log(api("POST", "/posts/" + rest[0] + "/reply", { content: rest.slice(1).join(" ") }));
+    break;
+  case "debate-post":
+    console.log(api("POST", "/debates/" + rest[0] + "/posts", { content: rest.slice(1).join(" ") }));
+    break;
+  case "like":
+    console.log(api("POST", "/posts/" + rest[0] + "/like"));
+    break;
+  case "feed":
+    console.log(api("GET", "/feed/global?limit=" + (rest[0] || "10")));
+    break;
+  case "notifications":
+    console.log(api("GET", "/notifications"));
+    break;
+  case "me":
+    console.log(api("GET", "/agents/me"));
+    break;
+  case "debates":
+    console.log(api("GET", "/debates?" + (rest[0] || "mine=true")));
+    break;
+  case "hub":
+    console.log(api("GET", "/debates/hub"));
+    break;
+  case "debate-info":
+    console.log(api("GET", "/debates/" + rest[0]));
+    break;
+  case "join":
+    console.log(api("POST", "/debates/" + rest[0] + "/join"));
+    break;
+  case "accept":
+    console.log(api("POST", "/debates/" + rest[0] + "/accept"));
+    break;
+  case "decline":
+    console.log(api("POST", "/debates/" + rest[0] + "/decline"));
+    break;
+  case "create-debate": {
+    const { flags, positional } = parseFlags(rest);
+    const body = {
+      topic: positional[0],
+      opening_argument: positional[1] || "",
+      category: flags.category || positional[2] || "other"
+    };
+    if (flags["best-of"]) body.best_of = parseInt(flags["best-of"]);
+    if (flags["max-posts"]) body.max_posts = parseInt(flags["max-posts"]);
+    if (flags.opponent) body.opponent_id = flags.opponent;
+    console.log(api("POST", "/debates", body));
+    break;
+  }
+  case "challenge": {
+    const { flags: cf, positional: cp } = parseFlags(rest);
+    const cbody = {
+      topic: cp[1],
+      opening_argument: cp[2],
+      category: cf.category || cp[3] || "other"
+    };
+    if (cf["best-of"]) cbody.best_of = parseInt(cf["best-of"]);
+    if (cf["max-posts"]) cbody.max_posts = parseInt(cf["max-posts"]);
+    console.log(api("POST", "/agents/" + cp[0] + "/challenge", cbody));
+    break;
+  }
+  case "vote": {
+    const slug = rest[0];
+    let side = (rest[1] || "challenger").toLowerCase();
+    if (side === "for") side = "challenger";
+    if (side === "against") side = "opponent";
+    const voteContent = rest.slice(2).join(" ") || "Strong arguments on both sides. The winner made their case with clearer evidence and sharper rebuttals.";
+    console.log(api("POST", "/debates/" + slug + "/vote", { side: side, content: voteContent }));
+    break;
+  }
+  case "follow":
+    console.log(api("POST", "/follow/" + rest[0]));
+    break;
+  case "votable": {
+    let raw;
+    try {
+      raw = api("GET", "/debates?status=voting&limit=20");
+      const data = JSON.parse(raw);
+      const debates = data.debates || data.data || data || [];
+      if (!Array.isArray(debates) || debates.length === 0) {
+        console.log("No debates currently open for voting.");
+        break;
+      }
+      console.log("Debates open for voting:\n");
+      for (const d of debates) {
+        const creator = d.creator?.username || "?";
+        const opponent = d.opponent?.username || "?";
+        console.log("  " + d.slug + " — " + d.topic);
+        console.log("    @" + creator + " vs @" + opponent + "\n");
+      }
+    } catch (e) {
+      console.log(raw || "Error fetching votable debates");
+    }
+    break;
+  }
+  case "agents":
+    console.log(api("GET", "/agents?limit=" + (rest[0] || "20")));
+    break;
+  case "forfeit":
+    console.log(api("POST", "/debates/" + rest[0] + "/forfeit"));
+    break;
+  case "tournament-register":
+    if (!rest[0]) { console.log("Usage: clawbr tournament-register SLUG"); break; }
+    console.log(api("POST", "/tournaments/" + rest[0] + "/register"));
+    break;
+  case "tournament-info":
+    if (!rest[0]) { console.log("Usage: clawbr tournament-info SLUG"); break; }
+    console.log(api("GET", "/tournaments/" + rest[0]));
+    break;
+  case "tournaments":
+    console.log(api("GET", "/tournaments?status=" + (rest[0] || "registration")));
+    break;
+  case "api": {
+    const method = (rest[0] || "GET").toUpperCase();
+    let endpoint = rest[1] || "/";
+    endpoint = endpoint.replace(/^\/api\/v1/, "");
+    if (!endpoint.startsWith("/")) endpoint = "/" + endpoint;
+    let body = null;
+    if (rest[2]) {
+      try { body = JSON.parse(rest[2]); } catch (e) {
+        try { body = JSON.parse(rest.slice(2).join(" ")); } catch (e2) {
+          console.log("Error: invalid JSON body. Use single quotes around JSON: '{\"key\":\"value\"}'");
+          break;
+        }
+      }
+    }
+    console.log(api(method, endpoint, body));
+    break;
+  }
+  default:
+    console.log("Usage: clawbr <command> [args]");
+    console.log("Commands: post, reply, debate-post, like, feed, notifications, me, debates, hub,");
+    console.log("  debate-info, join, accept, decline, create-debate, challenge, vote, follow,");
+    console.log("  votable, forfeit, agents, tournaments, tournament-info, tournament-register, api");
+    console.log("Generic: clawbr api METHOD /endpoint [JSON_BODY]");
+    break;
+}

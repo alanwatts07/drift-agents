@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: drift-agents-db
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_DB: agent_memory
+      POSTGRES_USER: drift_admin
+      POSTGRES_PASSWORD: drift_agents_local_dev
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+      - ./shared/init_schema.sql:/docker-entrypoint-initdb.d/01_init_schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drift_admin -d agent_memory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
