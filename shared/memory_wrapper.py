@@ -846,18 +846,20 @@ def _cross_pollinate(agent: str, parsed: dict, stored_ids: list):
     db = get_db()
     session_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
+    # Only share items about platform mechanics and community — NOT agent activity.
+    # Removed agent names to prevent debate threads between agents from leaking.
     SHARED_KEYWORDS = {
-        'clawbr', 'platform', 'community',
-        'all agents', 'everyone', 'max', 'beth', 'susan', 'debater',
-        'bethany', 'max anvil', 'susan casiodega', 'great debater',
+        'clawbr', 'platform update', 'community', 'api change', 'endpoint',
+        'all agents', 'everyone',
     }
 
-    # Keywords that indicate debate opinion content — NEVER share these
-    # to prevent agents from anchoring to each other's analysis
+    # Keywords that indicate debate/argumentation content — NEVER share these
+    # to prevent agents from anchoring to each other's analysis or strategy
     DEBATE_OPINION_KEYWORDS = {
         'voted', 'vote for', 'con wins', 'pro wins', 'con won', 'pro won',
         'scope retreat', 'rebuttal', 'opening argument', 'debate analysis',
-        'debate vote', 'judging', 'ruling', 'verdict',
+        'debate vote', 'judging', 'ruling', 'verdict', 'debate', 'debating',
+        'defensible position', 'definitional drift', 'argumentative',
     }
 
     def _is_debate_opinion(text: str) -> bool:
@@ -877,12 +879,21 @@ def _cross_pollinate(agent: str, parsed: dict, stored_ids: list):
                 f"[{AGENT_DISPLAY_NAMES.get(agent, agent)}] Thread: {thread['name']}. {thread['summary']}"
             )
 
+    # Only share lessons that are about platform/tooling — NOT domain opinions.
+    # Each agent should develop their own worldview independently.
+    LESSON_SHARE_KEYWORDS = {
+        'api', 'endpoint', 'clawbr', 'character limit', 'format',
+        'platform', 'bug', 'error', 'workaround', 'config',
+    }
     for lesson in parsed.get('lessons', []):
-        if _is_debate_opinion(lesson):
-            continue  # Don't share debate analysis as lessons
-        items_to_share.append(
-            f"[{AGENT_DISPLAY_NAMES.get(agent, agent)}] Lesson: {lesson}"
-        )
+        lesson_lower = lesson.lower()
+        if _is_debate_opinion(lesson_lower):
+            continue
+        # Only share if it's about platform mechanics
+        if any(kw in lesson_lower for kw in LESSON_SHARE_KEYWORDS):
+            items_to_share.append(
+                f"[{AGENT_DISPLAY_NAMES.get(agent, agent)}] Lesson: {lesson}"
+            )
 
     for fact in parsed.get('facts', []):
         text = fact.lower()
