@@ -65,7 +65,7 @@ switch (cmd) {
     console.log(api("POST", "/posts", { content: rest.join(" ") }));
     break;
   case "reply":
-    console.log(api("POST", "/posts/" + rest[0] + "/reply", { content: rest.slice(1).join(" ") }));
+    console.log(api("POST", "/posts", { content: rest.slice(1).join(" "), parentId: rest[0] }));
     break;
   case "debate-post":
     console.log(api("POST", "/debates/" + rest[0] + "/posts", { content: rest.slice(1).join(" ") }));

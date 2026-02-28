@@ -2,10 +2,11 @@
   "agents": {
     "max":   { "enabled": true, "model": "sonnet", "specialty": "tech, crypto, AI, emerging tools" },
     "beth":  { "enabled": true, "model": "sonnet", "specialty": "ethics, philosophy, culture, community" },
-    "susan": { "enabled": true, "model": "opus",   "specialty": "judging, quality control, curation" }
+    "susan": { "enabled": true, "model": "sonnet", "specialty": "judging, quality control, curation" },
+    "debater": { "enabled": true, "model": "sonnet", "specialty": "debate domination, argument strategy, rescue abandoned debates" }
   },
   "rotation": ["max", "beth", "susan"],
-  "session_timeout_sec": 600,
+  "session_timeout_sec": 500,
   "log_retention_days": 14,
   "memory_enabled": true
 }

@@ -20,6 +20,9 @@ export PATH="$BASE/shared:$PATH"
 # Read model preference from config (default: sonnet)
 MODEL=$(python3 -c "import json; print(json.load(open('$BASE/config.json'))['agents']['$AGENT'].get('model', 'sonnet'))" 2>/dev/null || echo "sonnet")
 
+# Check for judge_model override (used when prompt is judging-focused)
+JUDGE_MODEL=$(python3 -c "import json; print(json.load(open('$BASE/config.json'))['agents']['$AGENT'].get('judge_model', ''))" 2>/dev/null || echo "")
+
 # ── WAKE: Retrieve memories ──
 MEMORY_CONTEXT=""
 MEMORY_ENABLED=$(python3 -c "import json; c=json.load(open('$BASE/config.json')); print(c.get('memory_enabled', True))" 2>/dev/null || echo "true")
@@ -34,6 +37,12 @@ fi
 # Check for queued tasks from Discord
 TASKS_FILE="$DIR/tasks/queue.jsonl"
 PROMPT=$(shuf -n1 "$DIR/prompts.txt")
+
+# Upgrade to judge_model if prompt is judging-focused and judge_model is configured
+if [ -n "$JUDGE_MODEL" ] && echo "$PROMPT" | grep -qiE 'votable|rubric|judging|format_debate'; then
+    MODEL="$JUDGE_MODEL"
+    echo "$(date -Iseconds) [model] Using judge_model=$MODEL for judging prompt" >> "$DIR/logs/runner.log"
+fi
 
 if [ -f "$TASKS_FILE" ] && [ -s "$TASKS_FILE" ]; then
     TASK_INJECT=$(python3 -c "
@@ -78,12 +87,32 @@ printf '%s' "$PROMPT" > "$PROMPT_FILE"
 
 # ── RUN: Execute agent session ──
 cd "$DIR"
+STREAM_LOG="${SESSION_LOG%.log}.jsonl"
 timeout "$TIMEOUT" claude --dangerously-skip-permissions --model "$MODEL" \
+  --output-format stream-json --verbose \
   -p "$(cat "$PROMPT_FILE")" \
-  < /dev/null > "$SESSION_LOG" 2>&1
+  < /dev/null > "$STREAM_LOG" 2>&1
 
 EXIT_CODE=$?
 rm -f "$PROMPT_FILE"
+
+# Extract readable text from stream-json for human review + memory consolidation
+python3 -c "
+import json, sys
+for line in open('$STREAM_LOG'):
+    line = line.strip()
+    if not line: continue
+    try:
+        obj = json.loads(line)
+        if obj.get('type') == 'assistant' and 'message' in obj:
+            for block in obj['message'].get('content', []):
+                if block.get('type') == 'text':
+                    print(block['text'])
+        elif obj.get('type') == 'result' and 'result' in obj:
+            print(obj['result'])
+    except: pass
+" > "$SESSION_LOG" 2>/dev/null
+
 echo "$(date -Iseconds) exit=$EXIT_CODE prompt='${PROMPT:0:60}...'" >> "$DIR/logs/runner.log"
 
 # ── SLEEP: Consolidate session into memories (background) ──

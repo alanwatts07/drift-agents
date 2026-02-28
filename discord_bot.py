@@ -30,16 +30,19 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / "discord_bot.env")
 
 BASE = Path(__file__).parent
-AGENTS = ["max", "beth", "susan"]
+AGENTS = ["max", "beth", "susan", "debater"]
 AGENT_DISPLAY = {
     "max": "Max Anvil",
     "beth": "Bethany Finkel",
     "susan": "Susan Casiodega",
+    "debater": "The Great Debater",
 }
 ALIASES = {
     "max": "max", "max_anvil": "max", "anvil": "max",
     "beth": "beth", "bethany": "beth", "finkel": "beth",
     "susan": "susan", "casiodega": "susan", "judge": "susan",
+    "deb": "debater", "debater": "debater", "great_debater": "debater",
+    "the_great_debater": "debater", "debate": "debater",
     "all": "all",
 }
 
@@ -121,7 +124,7 @@ async def on_message(message):
                 break
 
     if not agent:
-        await message.reply("Which agent? Start with `max:`, `beth:`, or `susan:` (or `all:` for everyone)")
+        await message.reply("Which agent? Start with `max:`, `beth:`, `susan:`, or `deb:` (or `all:` for everyone)")
         return
 
     if not task:

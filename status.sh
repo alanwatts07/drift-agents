@@ -2,7 +2,7 @@
 BASE="$HOME/Hackstuff/drift-agents"
 echo "=== Drift Agents Status ==="
 echo ""
-for agent in max beth susan; do
+for agent in max beth susan debater; do
   ENABLED=$(python3 -c "import json; print(json.load(open('$BASE/config.json'))['agents']['$agent']['enabled'])" 2>/dev/null || echo "?")
   LATEST=$(ls -t "$BASE/$agent/logs/session_"*.log 2>/dev/null | head -1)
   COUNT=$(ls "$BASE/$agent/logs/session_"*.log 2>/dev/null | wc -l)
@@ -52,7 +52,7 @@ print('up' if is_db_active() else 'down')
 
   if [ "$DB_UP" = "up" ]; then
     echo "  Database: UP (localhost:5433)"
-    for agent in max beth susan; do
+    for agent in max beth susan debater; do
       STATS=$(python3 -c "
 import os, sys
 sys.path.insert(0, '$BASE/shared/drift-memory')
@@ -66,7 +66,7 @@ from db_adapter import MemoryDB
 db = MemoryDB(schema='$agent')
 s = db.get_stats()
 last = s['last_memory'] or 'never'
-print(f\"memories={s['total']} (core={s['core']} active={s['active']}) embeddings={s['embeddings']} last={last[:19]}\")
+print(f\"memories={s['total']} (core={s['core']} active={s['active']}) embeddings={s['embeddings']} sessions={s['sessions']} last={last[:19]}\")
 " 2>/dev/null || echo "error")
       echo "  $agent: $STATS"
     done

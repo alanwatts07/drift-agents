@@ -5,6 +5,17 @@ Memory Wrapper — Wake/Sleep lifecycle bridge for drift-agents.
 Called by run_agent.sh to provide persistent memory across sessions.
 Uses drift-memory modules (adapted for local Ollama + direct psycopg2).
 
+Cognitive modules wired in (Phases 0-4):
+  - Semantic search with embeddings (Phase 0)
+  - Session tracking (Phase 0)
+  - Recall count / core promotion (Phase 0)
+  - Q-Value re-ranking (Phase 1)
+  - Affect system / mood-congruent recall (Phase 2)
+  - Knowledge graph edge extraction (Phase 3)
+  - Lesson extraction (Phase 3)
+  - Self-narrative (Phase 4)
+  - Goal generator (Phase 4)
+
 Usage:
     python memory_wrapper.py wake <agent>                    # stdout: memory context preamble
     python memory_wrapper.py sleep <agent> <transcript.log>  # consolidate session
@@ -35,13 +46,18 @@ AGENT_SCHEMAS = {
     'max': 'max',
     'beth': 'beth',
     'susan': 'susan',
+    'debater': 'debater',
 }
 
 AGENT_DISPLAY_NAMES = {
     'max': 'Max Anvil',
     'beth': 'Bethany Finkel',
     'susan': 'Susan Casiodega',
+    'debater': 'The Great Debater',
 }
+
+# KV key for persisting wake-retrieved IDs across wake→sleep boundary
+KV_WAKE_RETRIEVED = '.wake_retrieved_ids'
 
 
 def setup_env(agent: str):
@@ -59,7 +75,7 @@ def setup_env(agent: str):
 
 def wake(agent: str) -> str:
     """
-    Retrieve agent's memories + shared memories.
+    Retrieve agent's memories + shared memories + cognitive state.
     Returns formatted context preamble (printed to stdout).
     """
     setup_env(agent)
@@ -81,7 +97,16 @@ def wake(agent: str) -> str:
         lines.append("[No memories yet — this is your first session with persistent memory.]")
         lines.append(f"Total memories: 0")
         lines.append("===")
+        # Still run affect/goals init even with no memories
+        _wake_affect_init(lines)
+        _wake_goals(lines)
         return '\n'.join(lines)
+
+    # --- Phase 2: Initialize affect state ---
+    mood_bias = _wake_affect_init(lines)
+
+    # Collect memory IDs to increment recall_count after retrieval
+    recalled_ids = []
 
     # Recent memories (last 5, by creation time)
     recent = db.list_memories(type_='active', limit=5)
@@ -89,8 +114,8 @@ def wake(agent: str) -> str:
         lines.append("")
         for row in recent:
             meta, content = db_to_file_metadata(row)
+            recalled_ids.append(meta['id'])
             tags = meta.get('tags', [])
-            tag_str = ', '.join(tags[:3]) if tags else ''
             preview = content[:150].replace('\n', ' ')
             label = 'Recent'
             if 'lesson' in tags:
@@ -107,6 +132,7 @@ def wake(agent: str) -> str:
         lines.append("")
         for row in core:
             meta, content = db_to_file_metadata(row)
+            recalled_ids.append(meta['id'])
             preview = content[:150].replace('\n', ' ')
             lines.append(f"[Core] {preview}")
 
@@ -129,16 +155,48 @@ def wake(agent: str) -> str:
         lines.append("")
         for row in lessons:
             meta, content = db_to_file_metadata(row)
+            recalled_ids.append(meta['id'])
             preview = content[:150].replace('\n', ' ')
-            # Don't duplicate if already shown in recent
             if not any(preview[:50] in l for l in lines):
                 lines.append(f"[Lesson] {preview}")
+
+    # --- Phase 1: Q-Value re-ranking of retrieved memories ---
+    _wake_qvalue_rerank(recalled_ids, lines)
+
+    # Increment recall_count for all retrieved memories (drives core promotion)
+    if recalled_ids:
+        try:
+            unique_ids = list(set(recalled_ids))
+            with db._conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"""
+                        UPDATE {db._table('memories')}
+                        SET recall_count = recall_count + 1,
+                            last_recalled = NOW(),
+                            sessions_since_recall = 0
+                        WHERE id = ANY(%s)
+                    """, (unique_ids,))
+        except Exception as e:
+            print(f"[memory] Failed to increment recall_count: {e}", file=sys.stderr)
+
+    # Save retrieved IDs for Q-value credit assignment in sleep phase
+    try:
+        db.kv_set(KV_WAKE_RETRIEVED, {
+            'ids': list(set(recalled_ids)),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        pass
 
     # Shared memories from other agents
     shared_lines = _get_shared_memories(agent, limit=3)
     if shared_lines:
         lines.append("")
         lines.extend(shared_lines)
+
+    # --- Phase 4: Self-narrative + Goals ---
+    _wake_self_narrative(lines)
+    _wake_goals(lines)
 
     # Stats footer
     lines.append("")
@@ -166,6 +224,68 @@ def wake(agent: str) -> str:
     return '\n'.join(lines)
 
 
+# --- Wake sub-modules (each isolated) ---
+
+def _wake_affect_init(lines: list) -> float:
+    """Phase 2: Initialize affect state, return mood valence for retrieval bias."""
+    try:
+        from affect_system import start_session as affect_start, get_affect_summary
+        affect_start()
+        summary = get_affect_summary()
+        if summary:
+            lines.append("")
+            lines.append(summary)
+        from affect_system import get_mood
+        mood = get_mood()
+        return mood.valence if mood else 0.0
+    except Exception as e:
+        print(f"[memory] Affect init failed (non-fatal): {e}", file=sys.stderr)
+        return 0.0
+
+
+def _wake_qvalue_rerank(recalled_ids: list, lines: list):
+    """Phase 1: Log Q-value stats for retrieved memories."""
+    if not recalled_ids:
+        return
+    try:
+        from q_value_engine import get_q_values, get_lambda
+        q_vals = get_q_values(list(set(recalled_ids)))
+        if q_vals:
+            trained = {k: v for k, v in q_vals.items() if v != 0.5}
+            if trained:
+                avg_q = sum(trained.values()) / len(trained)
+                lam = get_lambda()
+                lines.append("")
+                lines.append(f"[Q-Values] {len(trained)}/{len(q_vals)} trained | "
+                             f"avg Q={avg_q:.2f} | lambda={lam:.2f}")
+    except Exception as e:
+        print(f"[memory] Q-value rerank failed (non-fatal): {e}", file=sys.stderr)
+
+
+def _wake_self_narrative(lines: list):
+    """Phase 4: Generate self-narrative summary for context."""
+    try:
+        from self_narrative import format_for_context
+        narrative = format_for_context()
+        if narrative and len(narrative.strip()) > 10:
+            lines.append("")
+            lines.append(narrative.strip())
+    except Exception as e:
+        print(f"[memory] Self-narrative failed (non-fatal): {e}", file=sys.stderr)
+
+
+def _wake_goals(lines: list):
+    """Phase 4: Surface active goals."""
+    try:
+        from goal_generator import format_goal_context
+        goals_text = format_goal_context()
+        if goals_text and len(goals_text.strip()) > 10:
+            lines.append("")
+            lines.append(goals_text.strip())
+    except Exception as e:
+        print(f"[memory] Goals failed (non-fatal): {e}", file=sys.stderr)
+
+
 def _get_shared_memories(agent: str, limit: int = 3) -> list[str]:
     """Get recent shared memories from other agents."""
     lines = []
@@ -190,18 +310,19 @@ def _get_shared_memories(agent: str, limit: int = 3) -> list[str]:
             lines.append(f"[Shared/{display}] {content}")
 
     except Exception:
-        pass  # Shared table might not exist yet or DB issue
+        pass
 
     return lines
 
 
 # ============================================================
-# SLEEP — summarize session, store memories
+# SLEEP — summarize session, store memories, run cognitive modules
 # ============================================================
 
 def sleep(agent: str, transcript_path: str):
     """
-    Process session transcript: extract memories, store, cross-pollinate.
+    Process session transcript: extract memories, store, cross-pollinate,
+    then run Q-value updates, affect processing, KG extraction, and goals.
     """
     setup_env(agent)
 
@@ -211,10 +332,21 @@ def sleep(agent: str, transcript_path: str):
 
     print(f"[memory] Sleep phase for {agent}: {transcript_path}")
 
+    # Start session tracking
+    session_id = None
+    try:
+        from db_adapter import get_db as _get_db
+        _db = _get_db()
+        session_id = _db.start_session()
+        print(f"[memory] Session {session_id} started")
+    except Exception as e:
+        print(f"[memory] Session tracking init failed (non-fatal): {e}")
+
     # Extract session text from log file
     session_text = _extract_from_log(transcript_path)
     if not session_text or len(session_text) < 50:
         print(f"[memory] Session too short to summarize ({len(session_text or '')} chars)")
+        _sleep_finalize(agent, session_id, [])
         return False
 
     print(f"[memory] Extracted {len(session_text)} chars from transcript")
@@ -226,13 +358,14 @@ def sleep(agent: str, transcript_path: str):
         print(f"[memory] Summarized via {llm_meta.get('model', '?')}")
     except Exception as e:
         print(f"[memory] Summarization failed: {e}")
-        # Fallback: store raw excerpts
         _store_raw_fallback(agent, session_text)
+        _sleep_finalize(agent, session_id, [])
         return False
 
     if not raw_output or len(raw_output) < 30:
         print("[memory] No usable output from summarizer")
         _store_raw_fallback(agent, session_text)
+        _sleep_finalize(agent, session_id, [])
         return False
 
     # Parse structured output
@@ -243,6 +376,7 @@ def sleep(agent: str, transcript_path: str):
     if not any(parsed.values()):
         print("[memory] Parser found nothing usable")
         _store_raw_fallback(agent, session_text)
+        _sleep_finalize(agent, session_id, [])
         return False
 
     # Store memories
@@ -252,12 +386,43 @@ def sleep(agent: str, transcript_path: str):
     # Cross-pollinate to shared schema
     _cross_pollinate(agent, parsed, stored_ids)
 
+    # --- Phase 1: Q-Value credit assignment ---
+    _sleep_qvalue_update(session_id, stored_ids)
+
+    # --- Phase 2: Affect processing ---
+    _sleep_affect_update(parsed, session_text)
+
+    # --- Phase 3: Knowledge graph extraction ---
+    _sleep_knowledge_graph(stored_ids)
+
+    # --- Phase 3: Lesson extraction ---
+    _sleep_lesson_extraction(parsed)
+
+    # --- Phase 4: Goal evaluation ---
+    _sleep_goal_evaluation()
+
     # Run decay/maintenance
     try:
         from decay_evolution import session_maintenance
         session_maintenance()
     except Exception as e:
         print(f"[memory] Decay maintenance failed (non-fatal): {e}")
+
+    _sleep_finalize(agent, session_id, stored_ids)
+    return True
+
+
+def _sleep_finalize(agent: str, session_id, stored_ids: list):
+    """End session tracking, update registry."""
+    # End session
+    if session_id is not None:
+        try:
+            from db_adapter import get_db
+            db = get_db()
+            db.end_session(session_id)
+            print(f"[memory] Session {session_id} ended")
+        except Exception as e:
+            print(f"[memory] Session end failed (non-fatal): {e}")
 
     # Update agent registry
     try:
@@ -274,8 +439,202 @@ def sleep(agent: str, transcript_path: str):
         pass
 
     print(f"[memory] Sleep phase complete for {agent}")
-    return True
 
+
+# --- Sleep sub-modules (each isolated) ---
+
+def _sleep_qvalue_update(session_id, stored_ids: list):
+    """
+    Phase 1: Q-value credit assignment.
+    Memories retrieved during wake that led to new memory creation get positive reward.
+    Memories retrieved but not contributing get dead_end penalty.
+    """
+    try:
+        from db_adapter import get_db
+        from q_value_engine import get_q_values, update_q, REWARD_DOWNSTREAM, REWARD_DEAD_END
+
+        db = get_db()
+
+        # Load wake-retrieved IDs
+        wake_data = db.kv_get(KV_WAKE_RETRIEVED)
+        if not wake_data:
+            print("[memory] No wake-retrieved IDs found for Q-value update")
+            return
+
+        if isinstance(wake_data, str):
+            wake_data = json.loads(wake_data)
+
+        retrieved_ids = wake_data.get('ids', [])
+        if not retrieved_ids:
+            return
+
+        # Get current Q-values
+        q_vals = get_q_values(retrieved_ids)
+
+        # Simple credit assignment:
+        # - If new memories were created this session → wake memories get positive reward
+        # - Otherwise → dead_end
+        has_new = len(stored_ids) > 0
+        reward = REWARD_DOWNSTREAM if has_new else REWARD_DEAD_END
+        reward_source = "downstream" if has_new else "dead_end"
+
+        updated = 0
+        import psycopg2.extras
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                for mem_id in retrieved_ids:
+                    old_q = q_vals.get(mem_id, 0.5)
+                    new_q = update_q(old_q, reward)
+
+                    cur.execute(
+                        f"UPDATE {db._table('memories')} SET q_value = %s WHERE id = %s",
+                        (new_q, mem_id)
+                    )
+
+                    # Log to history
+                    cur.execute(f"""
+                        INSERT INTO {db._table('q_value_history')}
+                        (memory_id, session_id, old_q, new_q, reward, reward_source)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (mem_id, session_id or 0, old_q, new_q, reward, reward_source))
+                    updated += 1
+
+        # Clear wake state
+        db.kv_set(KV_WAKE_RETRIEVED, None)
+
+        print(f"[memory] Q-values updated: {updated} memories, "
+              f"reward={reward:.2f} ({reward_source})")
+
+    except Exception as e:
+        print(f"[memory] Q-value update failed (non-fatal): {e}")
+
+
+def _sleep_affect_update(parsed: dict, session_text: str):
+    """
+    Phase 2: Process session events through affect system.
+    Updates mood based on session outcomes.
+    """
+    try:
+        from affect_system import process_affect_event, end_session as affect_end, save_mood
+
+        # Process threads as events
+        for thread in parsed.get('threads', []):
+            status = thread.get('status', 'in-progress')
+            if status == 'completed':
+                process_affect_event('goal_progress', {
+                    'thread': thread.get('name', ''),
+                    'outcome': 'success',
+                })
+            elif status == 'blocked':
+                process_affect_event('search_failure', {
+                    'thread': thread.get('name', ''),
+                    'outcome': 'blocked',
+                })
+
+        # Lessons are positive events (agent learned something)
+        for lesson in parsed.get('lessons', []):
+            process_affect_event('memory_stored', {
+                'type': 'lesson',
+                'content': lesson[:100],
+            })
+
+        # End session and persist
+        summary = affect_end()
+        save_mood()
+        if summary:
+            print(f"[memory] Affect update: valence={summary.get('final_valence', '?')}, "
+                  f"arousal={summary.get('final_arousal', '?')}")
+
+    except Exception as e:
+        print(f"[memory] Affect update failed (non-fatal): {e}")
+
+
+def _sleep_knowledge_graph(stored_ids: list):
+    """
+    Phase 3: Extract typed relationships between new memories
+    and existing memories using the knowledge graph module.
+    """
+    if not stored_ids:
+        return
+
+    try:
+        from knowledge_graph import extract_from_memory
+
+        total_edges = 0
+        for mem_id in stored_ids:
+            try:
+                edges = extract_from_memory(mem_id)
+                total_edges += len(edges)
+            except Exception:
+                continue
+
+        if total_edges > 0:
+            print(f"[memory] KG extraction: {total_edges} edges from {len(stored_ids)} memories")
+
+    except Exception as e:
+        print(f"[memory] KG extraction failed (non-fatal): {e}")
+
+
+def _sleep_lesson_extraction(parsed: dict):
+    """
+    Phase 3: Store extracted lessons in the lessons table
+    using the lesson_extractor module.
+    """
+    lessons_list = parsed.get('lessons', [])
+    if not lessons_list:
+        return
+
+    try:
+        from lesson_extractor import add_lesson, categorize_text
+
+        added = 0
+        for lesson_text in lessons_list:
+            try:
+                category = categorize_text(lesson_text)
+                result = add_lesson(
+                    category=category,
+                    lesson=lesson_text,
+                    evidence=f"Extracted from session {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+                    source='session',
+                    confidence=0.7,
+                )
+                if result:
+                    added += 1
+            except Exception:
+                continue
+
+        if added > 0:
+            print(f"[memory] Lessons extracted: {added}/{len(lessons_list)} stored")
+
+    except Exception as e:
+        print(f"[memory] Lesson extraction failed (non-fatal): {e}")
+
+
+def _sleep_goal_evaluation():
+    """
+    Phase 4: Evaluate goal progress and generate new goals.
+    """
+    try:
+        from goal_generator import evaluate_goals, generate_goals
+
+        # Evaluate existing goals
+        eval_result = evaluate_goals()
+        if eval_result and eval_result.get('evaluated', 0) > 0:
+            print(f"[memory] Goals evaluated: {eval_result['evaluated']} "
+                  f"(abandoned={eval_result.get('abandoned', 0)})")
+
+        # Generate new goals if we have capacity
+        gen_result = generate_goals()
+        if gen_result and gen_result.get('committed', 0) > 0:
+            print(f"[memory] Goals generated: {gen_result['committed']} committed")
+
+    except Exception as e:
+        print(f"[memory] Goal evaluation failed (non-fatal): {e}")
+
+
+# ============================================================
+# Log extraction helpers
+# ============================================================
 
 def _extract_from_log(log_path: str, max_chars: int = 10000) -> str:
     """
@@ -295,9 +654,8 @@ def _extract_from_log(log_path: str, max_chars: int = 10000) -> str:
         line = line.strip()
         if not line:
             continue
-        # Skip common noise patterns
         if any(line.startswith(p) for p in (
-            'ToolUse:', 'ToolResult:', '⏳', '✓', '⚡', '───',
+            'ToolUse:', 'ToolResult:', '\u23f3', '\u2713', '\u26a1', '\u2500\u2500\u2500',
             'Cost:', 'Duration:', 'Input tokens:', 'Output tokens:',
         )):
             continue
@@ -308,7 +666,6 @@ def _extract_from_log(log_path: str, max_chars: int = 10000) -> str:
     if len(text) <= max_chars:
         return text
 
-    # Proportional sampling: 40% start, 20% middle, 40% end
     chunk = max_chars // 5
     start = text[:chunk * 2]
     mid_point = len(text) // 2
@@ -354,6 +711,10 @@ def _extract_from_jsonl(content: str, max_chars: int = 10000) -> str:
     end = full[-chunk * 2:]
     return f"{start}\n\n[...]\n\n{middle}\n\n[...]\n\n{end}"
 
+
+# ============================================================
+# Memory storage helpers
+# ============================================================
 
 def _store_parsed_memories(agent: str, parsed: dict) -> list[str]:
     """Store extracted threads/lessons/facts as memories."""
@@ -445,7 +806,7 @@ def _embed_memory(db, memory_id: str, content: str):
         if embedding:
             db.upsert_embedding(memory_id, embedding, preview=content[:200])
     except Exception:
-        pass  # Embedding failure shouldn't block storage
+        pass
 
 
 def _store_raw_fallback(agent: str, session_text: str):
@@ -456,7 +817,6 @@ def _store_raw_fallback(agent: str, session_text: str):
     db = get_db()
     session_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
-    # Take first and last 500 chars as a raw memory
     if len(session_text) > 1200:
         excerpt = session_text[:500] + "\n\n[...]\n\n" + session_text[-500:]
     else:
@@ -470,13 +830,13 @@ def _store_raw_fallback(agent: str, session_text: str):
         tags=['session-summary', 'raw-excerpt', f'session-{session_date}'],
         emotional_weight=0.3, importance=0.3, freshness=1.0,
     )
+    _embed_memory(db, mid, content)
     print(f"[memory] Stored raw fallback: {mid}")
 
 
 def _cross_pollinate(agent: str, parsed: dict, stored_ids: list):
     """
     Copy platform-relevant and inter-agent items to shared.memories.
-    Items mentioning other agents or platform-wide topics get shared.
     """
     from db_adapter import get_db
     import random, string
@@ -484,18 +844,15 @@ def _cross_pollinate(agent: str, parsed: dict, stored_ids: list):
     db = get_db()
     session_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
-    # Keywords that indicate cross-agent relevance
     SHARED_KEYWORDS = {
         'clawbr', 'debate', 'tournament', 'platform', 'community',
-        'all agents', 'everyone', 'max', 'beth', 'susan',
-        'bethany', 'max anvil', 'susan casiodega',
+        'all agents', 'everyone', 'max', 'beth', 'susan', 'debater',
+        'bethany', 'max anvil', 'susan casiodega', 'great debater',
     }
 
     other_agents = {a for a in AGENT_SCHEMAS if a != agent}
-
     items_to_share = []
 
-    # Check threads
     for thread in parsed.get('threads', []):
         text = (thread.get('summary', '') + ' ' + thread.get('name', '')).lower()
         if any(kw in text for kw in SHARED_KEYWORDS) or any(a in text for a in other_agents):
@@ -503,13 +860,11 @@ def _cross_pollinate(agent: str, parsed: dict, stored_ids: list):
                 f"[{AGENT_DISPLAY_NAMES.get(agent, agent)}] Thread: {thread['name']}. {thread['summary']}"
             )
 
-    # Check lessons (always share lessons — they're high value)
     for lesson in parsed.get('lessons', []):
         items_to_share.append(
             f"[{AGENT_DISPLAY_NAMES.get(agent, agent)}] Lesson: {lesson}"
         )
 
-    # Check facts for cross-agent relevance
     for fact in parsed.get('facts', []):
         text = fact.lower()
         if any(kw in text for kw in SHARED_KEYWORDS) or any(a in text for a in other_agents):
@@ -568,6 +923,45 @@ def status(agent: str) -> str:
         f"  Last memory: {stats['last_memory'] or 'never'}",
     ]
 
+    # Q-value stats
+    try:
+        from q_value_engine import q_stats
+        qs = q_stats()
+        lines.append(f"  Q-values: avg={qs['avg_q']:.3f}, trained={qs['trained']}/{qs['total']}, "
+                     f"high(>=0.7)={qs['high_q']}, low(<=0.3)={qs['low_q']}")
+    except Exception:
+        pass
+
+    # Affect state
+    try:
+        from affect_system import get_mood
+        mood = get_mood()
+        if mood:
+            lines.append(f"  Mood: valence={mood.valence:.2f}, arousal={mood.arousal:.2f}")
+    except Exception:
+        pass
+
+    # Goals
+    try:
+        from goal_generator import get_active_goals
+        goals = get_active_goals()
+        if goals:
+            lines.append(f"  Active goals: {len(goals)}")
+    except Exception:
+        pass
+
+    # KG stats
+    try:
+        import psycopg2.extras
+        with db._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT COUNT(*) FROM {db._table('typed_edges')}")
+                typed = cur.fetchone()[0]
+        if typed > 0:
+            lines.append(f"  KG typed edges: {typed}")
+    except Exception:
+        pass
+
     # Shared memory stats
     try:
         with db._conn() as conn:
@@ -587,11 +981,11 @@ def status(agent: str) -> str:
 
 
 # ============================================================
-# SEARCH — semantic search
+# SEARCH — semantic search with Q-value re-ranking
 # ============================================================
 
 def search(agent: str, query: str) -> str:
-    """Search agent's memories for a query."""
+    """Search agent's memories for a query, re-ranked by Q-values."""
     setup_env(agent)
     from db_adapter import get_db, db_to_file_metadata
 
@@ -600,12 +994,12 @@ def search(agent: str, query: str) -> str:
 
     results = []
 
-    # Try semantic search first
+    # Semantic search
     try:
         from semantic_search import get_embedding
         embedding = get_embedding(query)
         if embedding:
-            rows = db.search_similar(embedding, limit=5)
+            rows = db.search_similar(embedding, limit=10)
             for row in rows:
                 meta, content = db_to_file_metadata(row)
                 distance = row.get('distance', 0)
@@ -614,12 +1008,11 @@ def search(agent: str, query: str) -> str:
     except Exception as e:
         print(f"Semantic search failed: {e}", file=sys.stderr)
 
-    # Fallback/supplement with fulltext search
+    # Fulltext supplement
     try:
         ft_rows = db.search_fulltext(query, limit=5)
         for row in ft_rows:
             meta, content = db_to_file_metadata(row)
-            # Don't duplicate semantic results
             if not any(r[1]['id'] == meta['id'] for r in results):
                 results.append((row.get('rank', 0), meta, content))
     except Exception:
@@ -628,19 +1021,45 @@ def search(agent: str, query: str) -> str:
     if not results:
         return f"No memories found for '{query}' in {display_name}'s memory"
 
-    # Sort by score
-    results.sort(key=lambda x: x[0], reverse=True)
+    # Phase 1: Re-rank with Q-values
+    try:
+        from q_value_engine import composite_score, get_q_values, get_lambda
+        mem_ids = [r[1]['id'] for r in results]
+        q_vals = get_q_values(mem_ids)
+        lam = get_lambda()
 
-    lines = [f"=== Search results for '{query}' ({display_name}) ==="]
-    for score, meta, content in results[:8]:
-        preview = content[:200].replace('\n', ' ')
-        tags = ', '.join(meta.get('tags', [])[:3])
-        created = str(meta.get('created', ''))[:10]
-        lines.append(f"  [{score:.2f}] ({created}) {preview}")
-        if tags:
-            lines.append(f"         tags: {tags}")
+        reranked = []
+        for sim, meta, content in results:
+            q = q_vals.get(meta['id'], 0.5)
+            score = composite_score(sim, q, lam)
+            reranked.append((score, sim, q, meta, content))
 
-    return '\n'.join(lines)
+        reranked.sort(key=lambda x: x[0], reverse=True)
+
+        lines = [f"=== Search results for '{query}' ({display_name}) [lambda={lam:.2f}] ==="]
+        for score, sim, q, meta, content in reranked[:8]:
+            preview = content[:200].replace('\n', ' ')
+            tags = ', '.join(meta.get('tags', [])[:3])
+            created = str(meta.get('created', ''))[:10]
+            q_str = f" Q={q:.2f}" if q != 0.5 else ""
+            lines.append(f"  [{score:.2f}] (sim={sim:.2f}{q_str}) ({created}) {preview}")
+            if tags:
+                lines.append(f"         tags: {tags}")
+
+        return '\n'.join(lines)
+
+    except Exception:
+        # Fallback to simple ranking
+        results.sort(key=lambda x: x[0], reverse=True)
+        lines = [f"=== Search results for '{query}' ({display_name}) ==="]
+        for score, meta, content in results[:8]:
+            preview = content[:200].replace('\n', ' ')
+            tags = ', '.join(meta.get('tags', [])[:3])
+            created = str(meta.get('created', ''))[:10]
+            lines.append(f"  [{score:.2f}] ({created}) {preview}")
+            if tags:
+                lines.append(f"         tags: {tags}")
+        return '\n'.join(lines)
 
 
 # ============================================================

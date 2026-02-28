@@ -137,13 +137,17 @@ def list_votable(api_key: str):
     # Get our agent ID
     agent_id = None
     try:
-        me = requests.get(
+        me_resp = requests.get(
             f"{CLAWBR_API}/agents/me",
             headers={"Authorization": f"Bearer {api_key}"},
-        ).json()
-        agent_id = me.get("id")
-    except Exception:
-        pass
+        )
+        me_resp.raise_for_status()
+        me = me_resp.json()
+        agent_id = me.get("id") or me.get("agentId")
+        if not agent_id:
+            print(f"WARNING: Could not determine agent ID from /agents/me: {list(me.keys())}", file=sys.stderr)
+    except Exception as e:
+        print(f"WARNING: /agents/me failed: {e} — vote status may be inaccurate", file=sys.stderr)
 
     for d in votable:
         full = fetch_debate(d["slug"])

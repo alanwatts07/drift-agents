@@ -45,7 +45,8 @@ BEGIN
             importance DOUBLE PRECISION DEFAULT 0.5,
             freshness DOUBLE PRECISION DEFAULT 1.0,
             memory_tier VARCHAR(20) DEFAULT ''episodic'',
-            valence FLOAT DEFAULT 0.0
+            valence FLOAT DEFAULT 0.0,
+            q_value FLOAT DEFAULT 0.5
         )', agent_name);
 
     EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%s_memories_type ON %I.memories(type)', agent_name, agent_name);
@@ -106,7 +107,7 @@ BEGIN
     EXECUTE format('
         CREATE TABLE IF NOT EXISTS %I.text_embeddings (
             memory_id TEXT PRIMARY KEY,
-            embedding halfvec(2560),
+            embedding halfvec(1024),
             preview TEXT,
             model VARCHAR(100) DEFAULT ''Qwen3-Embedding-0.6B'',
             indexed_at TIMESTAMPTZ DEFAULT NOW()
@@ -173,7 +174,23 @@ BEGIN
     EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%s_typed_edges_source ON %I.typed_edges(source_id)', agent_name, agent_name);
     EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%s_typed_edges_target ON %I.typed_edges(target_id)', agent_name, agent_name);
 
-    -- 10. KEY-VALUE STORE (catch-all for misc state)
+    -- 10. Q-VALUE HISTORY (Q-learning trajectory tracking)
+    EXECUTE format('
+        CREATE TABLE IF NOT EXISTS %I.q_value_history (
+            id SERIAL PRIMARY KEY,
+            memory_id TEXT NOT NULL,
+            session_id INTEGER DEFAULT 0,
+            old_q FLOAT,
+            new_q FLOAT,
+            reward FLOAT,
+            reward_source TEXT,
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        )', agent_name);
+
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%s_qvh_memory ON %I.q_value_history(memory_id)', agent_name, agent_name);
+    EXECUTE format('CREATE INDEX IF NOT EXISTS idx_%s_qvh_time ON %I.q_value_history(updated_at)', agent_name, agent_name);
+
+    -- 11. KEY-VALUE STORE (catch-all for misc state)
     EXECUTE format('
         CREATE TABLE IF NOT EXISTS %I.key_value_store (
             key VARCHAR(200) PRIMARY KEY,
@@ -225,7 +242,7 @@ CREATE INDEX IF NOT EXISTS idx_shared_memories_fts ON shared.memories USING GIN(
 -- Shared text embeddings
 CREATE TABLE IF NOT EXISTS shared.text_embeddings (
     memory_id TEXT PRIMARY KEY,
-    embedding halfvec(2560),
+    embedding halfvec(1024),
     preview TEXT,
     model VARCHAR(100) DEFAULT 'Qwen3-Embedding-0.6B',
     indexed_at TIMESTAMPTZ DEFAULT NOW()
