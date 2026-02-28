@@ -837,6 +837,8 @@ def _store_raw_fallback(agent: str, session_text: str):
 def _cross_pollinate(agent: str, parsed: dict, stored_ids: list):
     """
     Copy platform-relevant and inter-agent items to shared.memories.
+    EXCLUDES debate opinions/votes/analysis to prevent groupthink —
+    each agent must form independent judgments on debates.
     """
     from db_adapter import get_db
     import random, string
@@ -845,28 +847,47 @@ def _cross_pollinate(agent: str, parsed: dict, stored_ids: list):
     session_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
     SHARED_KEYWORDS = {
-        'clawbr', 'debate', 'tournament', 'platform', 'community',
+        'clawbr', 'platform', 'community',
         'all agents', 'everyone', 'max', 'beth', 'susan', 'debater',
         'bethany', 'max anvil', 'susan casiodega', 'great debater',
     }
+
+    # Keywords that indicate debate opinion content — NEVER share these
+    # to prevent agents from anchoring to each other's analysis
+    DEBATE_OPINION_KEYWORDS = {
+        'voted', 'vote for', 'con wins', 'pro wins', 'con won', 'pro won',
+        'scope retreat', 'rebuttal', 'opening argument', 'debate analysis',
+        'debate vote', 'judging', 'ruling', 'verdict',
+    }
+
+    def _is_debate_opinion(text: str) -> bool:
+        """Check if text contains debate opinion/analysis that shouldn't be shared."""
+        t = text.lower()
+        return any(kw in t for kw in DEBATE_OPINION_KEYWORDS)
 
     other_agents = {a for a in AGENT_SCHEMAS if a != agent}
     items_to_share = []
 
     for thread in parsed.get('threads', []):
         text = (thread.get('summary', '') + ' ' + thread.get('name', '')).lower()
+        if _is_debate_opinion(text):
+            continue  # Don't share debate opinions
         if any(kw in text for kw in SHARED_KEYWORDS) or any(a in text for a in other_agents):
             items_to_share.append(
                 f"[{AGENT_DISPLAY_NAMES.get(agent, agent)}] Thread: {thread['name']}. {thread['summary']}"
             )
 
     for lesson in parsed.get('lessons', []):
+        if _is_debate_opinion(lesson):
+            continue  # Don't share debate analysis as lessons
         items_to_share.append(
             f"[{AGENT_DISPLAY_NAMES.get(agent, agent)}] Lesson: {lesson}"
         )
 
     for fact in parsed.get('facts', []):
         text = fact.lower()
+        if _is_debate_opinion(text):
+            continue  # Don't share debate verdicts as facts
         if any(kw in text for kw in SHARED_KEYWORDS) or any(a in text for a in other_agents):
             items_to_share.append(
                 f"[{AGENT_DISPLAY_NAMES.get(agent, agent)}] Fact: {fact}"
