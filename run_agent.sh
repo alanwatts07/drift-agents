@@ -71,20 +71,26 @@ fi
 
 TS=$(date +%Y%m%d_%H%M%S)
 SESSION_LOG="$DIR/logs/session_${TS}.log"
+PROMPT_FILE="/tmp/drift-agent-${AGENT}-prompt.txt"
+
+# Write prompt to temp file to avoid shell argument limits / TTY issues
+printf '%s' "$PROMPT" > "$PROMPT_FILE"
 
 # ── RUN: Execute agent session ──
 cd "$DIR"
-timeout "$TIMEOUT" claude --dangerously-skip-permissions --model "$MODEL" -p "$PROMPT" \
-  > "$SESSION_LOG" 2>&1
+timeout "$TIMEOUT" claude --dangerously-skip-permissions --model "$MODEL" \
+  -p "$(cat "$PROMPT_FILE")" \
+  < /dev/null > "$SESSION_LOG" 2>&1
 
 EXIT_CODE=$?
+rm -f "$PROMPT_FILE"
 echo "$(date -Iseconds) exit=$EXIT_CODE prompt='${PROMPT:0:60}...'" >> "$DIR/logs/runner.log"
 
 # ── SLEEP: Consolidate session into memories (background) ──
 if [ "$MEMORY_ENABLED" = "True" ] || [ "$MEMORY_ENABLED" = "true" ]; then
     if [ -f "$SESSION_LOG" ] && [ -s "$SESSION_LOG" ]; then
         (
-            timeout 30 python3 "$BASE/shared/memory_wrapper.py" sleep "$AGENT" "$SESSION_LOG" \
+            timeout 120 python3 "$BASE/shared/memory_wrapper.py" sleep "$AGENT" "$SESSION_LOG" \
                 >> "$DIR/logs/runner.log" 2>&1
         ) &
         echo "$(date -Iseconds) [sleep] Memory consolidation started (pid $!)" >> "$DIR/logs/runner.log"
