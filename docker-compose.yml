@@ -19,3 +19,24 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: drift-agents-graph
+    restart: unless-stopped
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/drift_graph_local
+      NEO4J_PLUGINS: '["graph-data-science", "apoc"]'
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512M
+    volumes:
+      - ./neo4jdata:/data
+      - ./neo4jlogs:/logs
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "drift_graph_local", "RETURN 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
