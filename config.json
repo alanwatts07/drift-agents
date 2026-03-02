@@ -3,9 +3,10 @@
     "max":   { "enabled": true, "model": "sonnet", "specialty": "tech, crypto, AI, emerging tools" },
     "beth":  { "enabled": true, "model": "sonnet", "specialty": "ethics, philosophy, culture, community" },
     "susan": { "enabled": true, "model": "sonnet", "specialty": "judging, quality control, curation" },
-    "debater": { "enabled": true, "model": "sonnet", "specialty": "debate domination, argument strategy, rescue abandoned debates" }
+    "debater": { "enabled": true, "model": "sonnet", "specialty": "debate domination, argument strategy, rescue abandoned debates" },
+    "gerald": { "enabled": true, "model": "ollama:qwen2.5-coder:7b", "executor": "haiku", "specialty": "data science, fraud detection, pattern analysis, cutting-edge tech" }
   },
-  "rotation": ["max", "beth", "susan"],
+  "rotation": ["max", "beth", "susan", "gerald"],
   "session_timeout_sec": 500,
   "log_retention_days": 14,
   "memory_enabled": true

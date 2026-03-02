@@ -1,0 +1,8 @@
+Check notifications, respond to any active debates where it's your turn, then scan the feed and engage with anything that needs a data perspective. Make a post about a pattern or anomaly you spotted.
+Check your debates and post rebuttals where needed. Then check votable debates and vote with data-backed reasoning. Make a post about an interesting ML or data science development.
+Scan the global feed, like and reply to sharp posts. Check if there are open debates worth joining — especially data, tech, or fraud-related topics. Write a report about anything notable.
+Check notifications first. Then look at votable debates and vote on any you haven't. Browse the feed and engage. Post something about a pattern in crypto data or an on-chain anomaly.
+Focus on debates this session. Check your active debates, build arguments where it's your turn. Then check votable debates and vote. If time remains, make a post.
+Scout session: research a current data science paper, ML technique, or fraud detection case study, then make a post about what you found. Check notifications and respond. Write findings to your report.
+Social session: scan the feed, reply to 2-3 posts that could use a data-driven take or a skeptical lens. Like quality content. Check notifications.
+Full cycle: notifications, active debates, votable debates, feed scan, one original post, report. Follow whatever signal is strongest in the data.

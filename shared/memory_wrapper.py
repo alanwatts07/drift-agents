@@ -47,6 +47,7 @@ AGENT_SCHEMAS = {
     'beth': 'beth',
     'susan': 'susan',
     'debater': 'debater',
+    'gerald': 'gerald',
 }
 
 AGENT_DISPLAY_NAMES = {
@@ -54,6 +55,7 @@ AGENT_DISPLAY_NAMES = {
     'beth': 'Bethany Finkel',
     'susan': 'Susan Casiodega',
     'debater': 'The Great Debater',
+    'gerald': 'Gerald Boxford',
 }
 
 # KV key for persisting wake-retrieved IDs across wake→sleep boundary
@@ -379,7 +381,7 @@ def sleep(agent: str, transcript_path: str):
         _sleep_finalize(agent, session_id, [])
         return False
 
-    # Store memories
+    # Store memories (with platitude filtering + dedup)
     stored_ids = _store_parsed_memories(agent, parsed)
     print(f"[memory] Stored {len(stored_ids)} memories")
 
@@ -716,6 +718,45 @@ def _extract_from_jsonl(content: str, max_chars: int = 10000) -> str:
 # Memory storage helpers
 # ============================================================
 
+def _is_platitude(text: str) -> bool:
+    """Filter out generic filler memories with no specific content."""
+    platitude_patterns = [
+        'the importance of ', 'the necessity of ', 'the value of ',
+        'the need to ', 'the significance of ', 'the benefit of ',
+        '[another concrete', 'the role of ', 'the impact of clear',
+    ]
+    lower = text.lower()
+    # Check for platitude starters
+    for pat in platitude_patterns:
+        if pat in lower:
+            # Allow if it also contains specific data (numbers, URLs, slugs, @names)
+            import re
+            has_specifics = bool(re.search(r'(\d{2,}|https?://|@\w+|[a-z]+-[a-z]+-[a-z0-9]{4})', lower))
+            if not has_specifics:
+                return True
+    return False
+
+
+def _is_duplicate(db, content: str) -> bool:
+    """Check if substantially similar content already exists."""
+    try:
+        existing = db.search_fulltext(content[:80], limit=3)
+        for mem in existing:
+            existing_clean = mem.get('content', '').strip().lower()
+            new_clean = content.strip().lower()
+            # Exact match
+            if existing_clean == new_clean:
+                return True
+            # High overlap (strip date prefix and compare)
+            import re
+            strip_date = lambda s: re.sub(r'^\[session \d{4}-\d{2}-\d{2}\] ', '', s)
+            if strip_date(existing_clean) == strip_date(new_clean):
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def _store_parsed_memories(agent: str, parsed: dict) -> list[str]:
     """Store extracted threads/lessons/facts as memories."""
     from db_adapter import get_db
@@ -723,6 +764,7 @@ def _store_parsed_memories(agent: str, parsed: dict) -> list[str]:
 
     db = get_db()
     stored_ids = []
+    skipped = {'platitude': 0, 'duplicate': 0}
     session_date = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     session_tag = f"session-{session_date}"
 
@@ -735,6 +777,12 @@ def _store_parsed_memories(agent: str, parsed: dict) -> list[str]:
     for thread in parsed.get('threads', []):
         mid = gen_id()
         content = f"[Session {session_date}] Thread: {thread['name']}. {thread['summary']} Status: {thread['status']}."
+        if _is_platitude(content):
+            skipped['platitude'] += 1
+            continue
+        if _is_duplicate(db, content):
+            skipped['duplicate'] += 1
+            continue
         tags = ['session-summary', 'thread', session_tag, f"thread-{thread['status']}"]
         emotion = {'completed': 0.65, 'blocked': 0.3, 'in-progress': 0.5}.get(thread['status'], 0.5)
         entities = detect_entities(content, tags)
@@ -751,6 +799,12 @@ def _store_parsed_memories(agent: str, parsed: dict) -> list[str]:
     for i, lesson in enumerate(parsed.get('lessons', []), 1):
         mid = gen_id()
         content = f"[Session {session_date}] Lesson learned: {lesson}"
+        if _is_platitude(content):
+            skipped['platitude'] += 1
+            continue
+        if _is_duplicate(db, content):
+            skipped['duplicate'] += 1
+            continue
         tags = ['session-summary', 'lesson', session_tag, 'heuristic']
         entities = detect_entities(content, tags)
 
@@ -766,6 +820,12 @@ def _store_parsed_memories(agent: str, parsed: dict) -> list[str]:
     for i, fact in enumerate(parsed.get('facts', []), 1):
         mid = gen_id()
         content = f"[Session {session_date}] Key fact: {fact}"
+        if _is_platitude(content):
+            skipped['platitude'] += 1
+            continue
+        if _is_duplicate(db, content):
+            skipped['duplicate'] += 1
+            continue
         tags = ['session-summary', 'key-fact', session_tag, 'procedural']
         entities = detect_entities(content, tags)
 
@@ -776,6 +836,9 @@ def _store_parsed_memories(agent: str, parsed: dict) -> list[str]:
         )
         _embed_memory(db, mid, content)
         stored_ids.append(mid)
+
+    if any(skipped.values()):
+        print(f"[memory] Skipped: {skipped['platitude']} platitudes, {skipped['duplicate']} duplicates")
 
     # Link co-occurrences (same session)
     if len(stored_ids) > 1:
@@ -924,6 +987,157 @@ def _cross_pollinate(agent: str, parsed: dict, stored_ids: list):
         print(f"[memory] Shared {len(items_to_share)} items to shared.memories")
     except Exception as e:
         print(f"[memory] Cross-pollination failed: {e}")
+
+
+# ============================================================
+# WAKE WITH CUE — semantic retrieval using plan text as cue
+# ============================================================
+
+def wake_with_cue(agent: str, cue_text: str) -> str:
+    """
+    Like wake(), but replaces time-based retrieval with semantic search.
+    The cue_text (from context_gather.py planning step) drives which
+    memories are retrieved via pgvector cosine similarity.
+
+    Keeps: core memories, affect, goals, narrative, shared, Q-values.
+    Replaces: "5 recent by timestamp" + "3 lessons by weight" →
+              search_memories(cue, limit=5, threshold=0.3)
+    """
+    setup_env(agent)
+    from db_adapter import get_db, db_to_file_metadata
+
+    db = get_db()
+    display_name = AGENT_DISPLAY_NAMES.get(agent, agent)
+    lines = []
+    lines.append(f"=== YOUR MEMORY ({display_name}) ===")
+
+    try:
+        stats = db.get_stats()
+    except Exception as e:
+        lines.append(f"[Memory system unavailable: {e}]")
+        lines.append("===")
+        return '\n'.join(lines)
+
+    if stats['total'] == 0:
+        lines.append("[No memories yet — this is your first session with persistent memory.]")
+        lines.append(f"Total memories: 0")
+        lines.append("===")
+        _wake_affect_init(lines)
+        _wake_goals(lines)
+        return '\n'.join(lines)
+
+    # --- Phase 2: Initialize affect state ---
+    mood_bias = _wake_affect_init(lines)
+
+    # Collect memory IDs for recall_count + Q-value tracking
+    recalled_ids = []
+
+    # SEMANTIC RETRIEVAL (replaces time-based recent + lessons)
+    # Uses get_embedding + db.search_similar (same proven pattern as search())
+    try:
+        from semantic_search import get_embedding
+        cue_embedding = get_embedding(cue_text)
+        if cue_embedding:
+            rows = db.search_similar(cue_embedding, limit=8)
+            sem_results = []
+            for row in rows:
+                distance = row.get('distance', 1.0)
+                similarity = max(0, 1 - distance)
+                if similarity >= 0.3:
+                    sem_results.append((similarity, row))
+            if sem_results:
+                lines.append("")
+                for score, row in sem_results[:5]:
+                    meta, content = db_to_file_metadata(row)
+                    recalled_ids.append(meta['id'])
+                    preview = content[:150].replace('\n', ' ')
+                    lines.append(f"[Relevant ({score:.2f})] {preview}")
+        else:
+            raise ValueError("Embedding failed")
+    except Exception as e:
+        print(f"[memory] Semantic search failed, falling back to recent: {e}", file=sys.stderr)
+        # Fallback: same as wake() — recent by timestamp
+        recent = db.list_memories(type_='active', limit=5)
+        if recent:
+            lines.append("")
+            for row in recent:
+                meta, content = db_to_file_metadata(row)
+                recalled_ids.append(meta['id'])
+                preview = content[:150].replace('\n', ' ')
+                lines.append(f"[Recent] {preview}")
+
+    # Core memories ALWAYS (same as wake())
+    core = db.list_memories(type_='core', limit=3)
+    if core:
+        lines.append("")
+        for row in core:
+            meta, content = db_to_file_metadata(row)
+            recalled_ids.append(meta['id'])
+            preview = content[:150].replace('\n', ' ')
+            lines.append(f"[Core] {preview}")
+
+    # --- Phase 1: Q-Value re-ranking ---
+    _wake_qvalue_rerank(recalled_ids, lines)
+
+    # Increment recall_count for all retrieved memories
+    if recalled_ids:
+        try:
+            unique_ids = list(set(recalled_ids))
+            with db._conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(f"""
+                        UPDATE {db._table('memories')}
+                        SET recall_count = recall_count + 1,
+                            last_recalled = NOW(),
+                            sessions_since_recall = 0
+                        WHERE id = ANY(%s)
+                    """, (unique_ids,))
+        except Exception as e:
+            print(f"[memory] Failed to increment recall_count: {e}", file=sys.stderr)
+
+    # Save retrieved IDs for Q-value credit assignment in sleep phase
+    try:
+        db.kv_set(KV_WAKE_RETRIEVED, {
+            'ids': list(set(recalled_ids)),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        pass
+
+    # Shared memories from other agents
+    shared_lines = _get_shared_memories(agent, limit=3)
+    if shared_lines:
+        lines.append("")
+        lines.extend(shared_lines)
+
+    # --- Phase 4: Self-narrative + Goals ---
+    _wake_self_narrative(lines)
+    _wake_goals(lines)
+
+    # Stats footer
+    lines.append("")
+    last_session = stats.get('last_memory')
+    if last_session:
+        try:
+            last_dt = datetime.fromisoformat(last_session)
+            ago = datetime.now(timezone.utc) - last_dt
+            hours = int(ago.total_seconds() / 3600)
+            if hours < 1:
+                ago_str = f"{int(ago.total_seconds() / 60)}m ago"
+            elif hours < 24:
+                ago_str = f"{hours}h ago"
+            else:
+                ago_str = f"{hours // 24}d ago"
+        except Exception:
+            ago_str = "unknown"
+    else:
+        ago_str = "never"
+
+    lines.append(f"Total memories: {stats['total']} (core: {stats['core']}, active: {stats['active']}) | "
+                 f"Last session: {ago_str} | Sessions: {stats['sessions']}")
+    lines.append("===")
+
+    return '\n'.join(lines)
 
 
 # ============================================================
@@ -1100,16 +1314,29 @@ def search(agent: str, query: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(description='Memory Wrapper for drift-agents')
-    parser.add_argument('command', choices=['wake', 'sleep', 'status', 'search'],
+    parser.add_argument('command', choices=['wake', 'wake_cue', 'sleep', 'status', 'search'],
                         help='Command to run')
     parser.add_argument('agent', choices=list(AGENT_SCHEMAS.keys()),
                         help='Agent name')
-    parser.add_argument('extra', nargs='?', help='Transcript path (sleep) or query (search)')
+    parser.add_argument('extra', nargs='?', help='Transcript path (sleep), query (search), or cue text (wake_cue)')
 
     args = parser.parse_args()
 
     if args.command == 'wake':
         print(wake(args.agent))
+
+    elif args.command == 'wake_cue':
+        cue = args.extra or ''
+        # Support @filepath to read cue from file
+        if cue.startswith('@'):
+            try:
+                cue = Path(cue[1:]).read_text().strip()
+            except Exception:
+                cue = ''
+        if cue:
+            print(wake_with_cue(args.agent, cue))
+        else:
+            print(wake(args.agent))  # fallback to standard wake
 
     elif args.command == 'sleep':
         if not args.extra:
