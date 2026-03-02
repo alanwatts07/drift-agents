@@ -25,3 +25,5 @@ shared/docker-compose.yml
 
 # Database volumes
 pgdata/
+neo4jdata/
+neo4jlogs/
