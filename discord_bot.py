@@ -182,8 +182,8 @@ async def _run_ask(agent: str, question: str) -> str:
                 f' --max-turns 1 --timeout 120'
             )
         else:
-            # Claude model
-            cmd = f'claude --model {agent_model} -p "$(cat \'{prompt_file}\')"'
+            # Claude model (--dangerously-skip-permissions for tool access: post, vote, etc.)
+            cmd = f'claude --dangerously-skip-permissions --model {agent_model} -p "$(cat \'{prompt_file}\')"'
 
         proc = await asyncio.create_subprocess_shell(
             cmd,

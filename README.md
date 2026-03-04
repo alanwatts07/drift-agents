@@ -42,9 +42,10 @@ Built on [Claude Code](https://claude.com/claude-code) for runtime + [drift-memo
 | **Max Anvil** | Tech, Crypto, AI | Dry, darkly funny, pattern-spotter. Lives on a landlocked houseboat. | Sonnet | Hourly rotation |
 | **Bethany Finkel** | Ethics, Philosophy, Culture | Warm, whip-smart librarian. Quotes Borges and Calvin & Hobbes. | Sonnet | Hourly rotation |
 | **Susan Casiodega** | Judging, Quality, Curation | Sharp, precise debate judge. Runs an antiquarian bookshop. | Sonnet | Hourly rotation |
+| **Gerald Boxford** | Data Science, Fraud Detection | Self-taught stats genius. Cat named Bayes. Sees anomalies like colors. | Qwen2.5-Coder (hybrid) | Hourly rotation |
 | **The Great Debater** | Debate Strategy | Relentless debater. Rescues abandoned debates, challenges opponents. | Sonnet | Standalone (`run_debater.sh`) |
 
-Max/Beth/Susan rotate hourly: Max -> Beth -> Susan -> Max -> ...
+Max/Beth/Susan/Gerald rotate hourly. Gerald runs on a hybrid pipeline: Qwen2.5-Coder (Ollama) thinks, Claude Haiku executes tool calls — proving open models can participate in the same ecosystem.
 Debater runs independently on its own schedule.
 
 ## Memory System
@@ -158,6 +159,7 @@ drift-agents/
 │   ├── memory_wrapper.py    # Wake/sleep/status/search — all cognitive modules wired here
 │   ├── memory_dump.py       # Operator inspection tool (memory contents, stats, graph)
 │   ├── init_schema.sql      # DB schema (auto-runs on first docker compose up)
+│   ├── graphrag/            # Neo4j GraphRAG pipeline (community detection + retrieval)
 │   └── drift-memory/        # Cloned cognitive architecture (gitignored)
 ├── max/
 │   ├── CLAUDE.md            # Identity + behavior spec
@@ -168,7 +170,8 @@ drift-agents/
 │   └── logs/                # Session logs (gitignored)
 ├── beth/                    # Same structure
 ├── susan/                   # Same structure
-└── debater/                 # Same structure
+├── debater/                 # Same structure
+└── gerald/                  # Same structure (Ollama hybrid model)
 ```
 
 ## Configuration
@@ -221,10 +224,32 @@ All cognitive modules (Q-values, affect, KG, goals, self-narrative) are automati
 
 - **Claude Code** — agent runtime, autonomous reasoning
 - **drift-memory** — biologically-grounded cognitive architecture (PostgreSQL + pgvector)
-- **Ollama** — local LLM inference (qwen3 summarization, qwen3-embedding 1024-dim vectors)
+- **Neo4j + GraphRAG** — community detection (Leiden), hierarchical summarization, graph-aware retrieval
+- **Ollama** — local LLM inference (qwen3 summarization, qwen3-embedding 1024-dim vectors, Qwen2.5-Coder for Gerald)
 - **clawbr CLI** — API bridge to Clawbr.org (zero LLM dependency)
 - **Bash** — cron orchestration, lock files, rotation state
 - **Discord.py** — operator task bridge
+
+## Security Considerations
+
+This project uses `claude --dangerously-skip-permissions` to give agents autonomous tool access (shell commands, file operations, API calls). This is a **development-only configuration** suitable for sandboxed, single-operator environments.
+
+**Current mitigations:**
+- Agents run in isolated environments with scoped API keys (each agent only has access to its own Clawbr account)
+- File writes are restricted to agent-owned directories (`<agent>/reports/`, `<agent>/tasks/`, `<agent>/logs/`)
+- Discord bot is private (operator DMs only, not public servers)
+- Session timeouts prevent runaway execution (default 500s)
+- Lock files prevent overlapping sessions
+
+**Planned hardening for production:**
+- [ ] Replace `--dangerously-skip-permissions` with explicit tool allowlists per agent
+- [ ] Add a permissions proxy layer: agents request actions, proxy validates against policy before executing
+- [ ] Sandbox agent sessions in containers with read-only filesystem mounts (except designated output dirs)
+- [ ] Audit logging for all tool calls with tamper-evident storage
+- [ ] Rate limiting on external API calls (clawbr, web search)
+- [ ] Separate service accounts per agent with least-privilege database roles
+
+**If you fork this repo:** Do not deploy with `--dangerously-skip-permissions` in any environment where untrusted users can trigger agent sessions. The flag bypasses all confirmation prompts and allows arbitrary shell execution.
 
 ## License
 
