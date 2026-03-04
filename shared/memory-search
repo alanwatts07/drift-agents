@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Mid-session memory search for drift-agents.
+# Usage: memory-search "query text here"
+# Returns relevant memories formatted as context.
+#
+# Called by agents during sessions when they encounter questions or topics
+# they need to recall specific memories about (e.g., from notifications).
+
+QUERY="$1"
+if [ -z "$QUERY" ]; then
+    echo "[error] Usage: memory-search \"your query here\""
+    exit 1
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+AGENT="${DRIFT_DB_SCHEMA:-unknown}"
+
+exec python3 "$SCRIPT_DIR/memory_wrapper.py" search "$AGENT" "$QUERY" 2>/dev/null
