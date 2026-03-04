@@ -196,11 +196,14 @@ def wake(agent: str) -> str:
         lines.append("")
         lines.extend(shared_lines)
 
+    # --- GraphRAG: Community-aware context (Phase 3) ---
+    _wake_graphrag(agent, recalled_ids, lines)
+
     # --- Phase 4: Self-narrative + Goals ---
     _wake_self_narrative(lines)
     _wake_goals(lines)
 
-    # Stats footer
+    # Stats footer (wake fn 1)
     lines.append("")
     last_session = stats.get('last_memory')
     if last_session:
@@ -286,6 +289,34 @@ def _wake_goals(lines: list):
             lines.append(goals_text.strip())
     except Exception as e:
         print(f"[memory] Goals failed (non-fatal): {e}", file=sys.stderr)
+
+
+def _wake_graphrag(agent: str, recalled_ids: list, lines: list):
+    """GraphRAG Phase 3: Expand wake context with graph communities."""
+    if os.environ.get('DRIFT_USE_GRAPHRAG', '1') != '1':
+        return
+    try:
+        graphrag_dir = str(Path(__file__).parent / "graphrag")
+        if graphrag_dir not in sys.path:
+            sys.path.insert(0, graphrag_dir)
+        from graph_retrieval import graphrag_search, format_graphrag_context
+
+        # Build a pseudo-query from the recalled memory IDs' content
+        # (or just use IDs for graph expansion + generic community matching)
+        result = graphrag_search(
+            agent,
+            query="",  # No text query in wake — we expand from seeds
+            seed_ids=list(set(recalled_ids)) if recalled_ids else [],
+            max_graph_expand=5,
+            max_community=3,
+        )
+
+        context_lines = format_graphrag_context(result, max_lines=8)
+        if context_lines:
+            lines.append("")
+            lines.extend(context_lines)
+    except Exception as e:
+        print(f"[memory] GraphRAG failed (non-fatal): {e}", file=sys.stderr)
 
 
 def _get_shared_memories(agent: str, limit: int = 3) -> list[str]:
@@ -1110,11 +1141,14 @@ def wake_with_cue(agent: str, cue_text: str) -> str:
         lines.append("")
         lines.extend(shared_lines)
 
+    # --- GraphRAG: Community-aware context (Phase 3) ---
+    _wake_graphrag(agent, recalled_ids, lines)
+
     # --- Phase 4: Self-narrative + Goals ---
     _wake_self_narrative(lines)
     _wake_goals(lines)
 
-    # Stats footer
+    # Stats footer (wake_with_cue fn)
     lines.append("")
     last_session = stats.get('last_memory')
     if last_session:
@@ -1292,11 +1326,10 @@ def search(agent: str, query: str) -> str:
             if tags:
                 lines.append(f"         tags: {tags}")
 
-        return '\n'.join(lines)
-
     except Exception:
         # Fallback to simple ranking
         results.sort(key=lambda x: x[0], reverse=True)
+        reranked = [(s, s, 0.5, m, c) for s, m, c in results]
         lines = [f"=== Search results for '{query}' ({display_name}) ==="]
         for score, meta, content in results[:8]:
             preview = content[:200].replace('\n', ' ')
@@ -1305,7 +1338,27 @@ def search(agent: str, query: str) -> str:
             lines.append(f"  [{score:.2f}] ({created}) {preview}")
             if tags:
                 lines.append(f"         tags: {tags}")
-        return '\n'.join(lines)
+
+    # GraphRAG: Enhance search with community context
+    try:
+        if os.environ.get('DRIFT_USE_GRAPHRAG', '1') == '1':
+            graphrag_dir = str(Path(__file__).parent / "graphrag")
+            if graphrag_dir not in sys.path:
+                sys.path.insert(0, graphrag_dir)
+            from graph_retrieval import graphrag_search, format_graphrag_context
+
+            seed_ids = [r[3]['id'] for r in reranked[:5]]
+            gresult = graphrag_search(agent, query, seed_ids=seed_ids,
+                                       max_graph_expand=5, max_community=3)
+            context_lines = format_graphrag_context(gresult, max_lines=6)
+            if context_lines:
+                lines.append("")
+                lines.append("--- Graph Context ---")
+                lines.extend(f"  {l}" for l in context_lines)
+    except Exception as e:
+        print(f"[memory] GraphRAG search enhancement failed (non-fatal): {e}", file=sys.stderr)
+
+    return '\n'.join(lines)
 
 
 # ============================================================
