@@ -85,69 +85,78 @@ Session ──────────► │ PostgreSQL (source of truth) │
 
 ## Migration Phases
 
-### Phase 0 — Neo4j Alongside PostgreSQL (Week 1)
+### Phase 0 — Neo4j Alongside PostgreSQL ✅
 **Goal**: Get Neo4j running, mirror existing data, prove it works.
 
-- [ ] Add Neo4j to docker-compose.yml (neo4j:community with APOC + GDS plugins)
-- [ ] Write `shared/drift-memory/neo4j_adapter.py` — connection pool, basic Cypher helpers
-- [ ] Write `shared/drift-memory/graph_sync.py` — PostgreSQL → Neo4j incremental sync
-  - Memories → `(:Memory {id, content, type, importance, q_value, created})`
-  - edges_v3 → `(:Memory)-[:COOCCURS {belief, first_formed}]->(:Memory)`
-  - typed_edges → `(:Memory)-[:CAUSES|ENABLES|CONTRADICTS|... {confidence}]->(:Memory)`
-  - Shared memories → `(:SharedMemory)` with `:CREATED_BY` edges to agents
-- [ ] Run initial full sync of all agent schemas
+- [x] Add Neo4j to docker-compose.yml (neo4j:5-community with APOC plugin)
+- [x] Write `shared/graphrag/neo4j_adapter.py` — connection pool, Cypher helpers, constraints
+- [x] Write `shared/graphrag/graph_sync.py` — PostgreSQL → Neo4j full + incremental sync
+  - Memories → `(:Memory)` nodes — 2,320 synced
+  - edges_v3 → `[:COOCCURS]` relationships
+  - typed_edges → 16 relationship types — 6,528 edges synced
+  - Shared memories → `(:SharedMemory)` — 198 synced
+  - Lessons → `(:Lesson)` nodes
+  - Agent nodes with `[:OWNS]` relationships
+- [x] Run initial full sync of all agent schemas (max, beth, susan, debater, gerald)
 - [ ] Add sync hook to sleep phase in memory_wrapper.py (non-blocking, fire-and-forget)
-- [ ] Verify: `MATCH (n:Memory) RETURN count(n)` matches PostgreSQL memory counts
+- [x] Verify: Neo4j memory count matches PostgreSQL
 
-**Risk**: Low — Neo4j is purely additive, nothing changes in the existing pipeline.
+**Status**: Complete. Neo4j running in parallel, all data mirrored.
 
-### Phase 1 — Community Detection (Week 2)
+### Phase 1 — Community Detection ✅
 **Goal**: Discover knowledge communities in each agent's memory graph.
 
-- [ ] Install Neo4j Graph Data Science (GDS) library
-- [ ] Write `shared/drift-memory/community_detection.py`:
-  - Run Leiden algorithm on each agent's memory graph
-  - `CALL gds.leiden.stream('memory-graph', {relationshipWeightProperty: 'belief'})`
-  - Assign community IDs to memory nodes
-  - Track community evolution across sessions (which communities grow/shrink/split)
-- [ ] Generate community metadata:
-  - Top entities per community
-  - Dominant relationship types
-  - Temporal span (oldest → newest memory)
-  - Average importance / q-value
+- [x] ~~Install Neo4j GDS~~ — GDS not available in community edition; using Python `leidenalg` + `igraph` instead
+- [x] Write `shared/graphrag/community_detection.py`:
+  - Pull memory nodes + edges from Neo4j → build igraph → run Leiden algorithm
+  - Assign community IDs to memory nodes via `[:BELONGS_TO]` relationships
+  - Create `(:Community)` nodes with metadata
+  - `[:HAS_COMMUNITY]` relationships from Agent to Community
+- [x] Generate community metadata:
+  - Top tags per community
+  - Average importance
+  - Type breakdown (active/core)
+  - Content previews (top 3 by importance)
+- [ ] Track community evolution across sessions
 - [ ] Visualize: Export community structure for dashboard.py
 
-**Deliverable**: Each agent's memories organized into 10-50 natural knowledge communities.
+**Status**: Complete. 1,697 communities detected across 5 agents. Debater's largest cluster: 55 memories.
 
-### Phase 2 — Hierarchical Summarization (Week 2-3)
+### Phase 2 — Hierarchical Summarization ✅
 **Goal**: Build multi-level summaries for each community.
 
-- [ ] Write `shared/drift-memory/community_summarizer.py`:
+- [x] Write `shared/graphrag/community_summarizer.py`:
   - Level 0: Individual memory content (already exists)
-  - Level 1: Per-community summary (LLM-generated from member memories)
-  - Level 2: Domain themes (clusters of related communities)
-  - Level 3: Agent worldview (top-level beliefs + stances)
-- [ ] Use local Ollama model for summarization (qwen3:latest or kimi when available)
-- [ ] Store summaries in Neo4j as `(:CommunitySummary)` nodes linked to communities
-- [ ] Re-summarize incrementally: when a community gains >3 new memories since last summary
-- [ ] Add to sleep phase: after memory consolidation, trigger community re-detection + re-summarization for affected communities
+  - Level 1: Per-community summary (LLM-generated from member memories) — title, summary, key_themes
+  - Robust JSON extraction handles models that wrap output in extra text
+- [x] Use local Ollama (qwen3:latest) for summarization
+- [x] Store summaries directly on `(:Community)` nodes (title, summary, key_themes, summarized_at)
+- [ ] Level 2: Domain themes (clusters of related communities)
+- [ ] Level 3: Agent worldview (top-level beliefs + stances)
+- [ ] Re-summarize incrementally when communities gain new members
+- [ ] Add to sleep phase: trigger re-detection + re-summarization for affected communities
 
-**Deliverable**: Queryable hierarchical knowledge map per agent.
+**Status**: Level 1 summarization complete for all multi-member communities (26 communities across 5 agents). Higher levels deferred.
 
-### Phase 3 — GraphRAG Retrieval (Week 3-4)
+### Phase 3 — GraphRAG Retrieval ✅
 **Goal**: Replace embedding-only recall with community-aware retrieval.
 
-- [ ] Write `shared/drift-memory/graphrag_retrieval.py`:
-  - **Local search** (specific queries): embed query → vector search → find which communities the results belong to → pull community summary for context → return memories + community context
-  - **Global search** (broad queries): embed query → match against community summaries → return relevant community summaries + representative memories
-  - **Map-reduce** (complex queries): fan out to multiple communities → collect partial answers → reduce into coherent response
-- [ ] Integrate into `memory_wrapper.py` wake phase:
-  - New mode: `wake_graphrag` alongside existing `wake` and `wake_cue`
-  - Falls back to pgvector if Neo4j unavailable
+- [x] Write `shared/graphrag/graph_retrieval.py`:
+  - **graph_expand()**: Expand seed memory IDs through Neo4j graph edges (1-hop)
+  - **community_search()**: Match query keywords against community titles/summaries/key_themes
+  - **graphrag_search()**: Full pipeline — expand seeds + match communities + pull community members
+  - **format_graphrag_context()**: Format results as context lines for agent prompts
+- [x] Integrate into `memory_wrapper.py`:
+  - `_wake_graphrag()` hook in both `wake()` and `wake_with_cue()`
+  - Enhanced `search()` appends "Graph Context" section with community matches
+  - Controlled by `DRIFT_USE_GRAPHRAG` env var (defaults to enabled)
+  - All GraphRAG failures are non-fatal — falls back gracefully to pgvector
 - [ ] A/B testing: log both pgvector and GraphRAG results, compare quality
+- [ ] Global search mode (broad queries matching community summaries only)
+- [ ] Map-reduce mode for complex multi-community queries
 - [ ] Tune: community granularity, summary detail level, traversal depth
 
-**Deliverable**: Agents recall with structural understanding, not just similarity matching.
+**Status**: Working. pgvector finds seeds → Neo4j expands via graph edges + matches community summaries → merged results returned to agents. Tested on `memory-search` queries.
 
 ### Phase 4 — Cross-Agent Graph (Week 4-5)
 **Goal**: Unified multi-agent knowledge graph.
@@ -161,16 +170,28 @@ Session ──────────► │ PostgreSQL (source of truth) │
 
 **Deliverable**: Agents can reason about what others know and where they disagree.
 
-### Phase 5 — PostgreSQL Sunset (Week 6+)
-**Goal**: Evaluate whether Neo4j can become source of truth.
+### Phase 4.5 — Neo4j Vector Index + Full Read Migration (THIS WEEK)
+**Goal**: Move ALL reads to Neo4j. PG becomes write-only, Neo4j handles all retrieval.
 
-- [ ] Benchmark: Neo4j write latency vs PostgreSQL for session-critical path
-- [ ] Evaluate: Can Neo4j vector index replace pgvector? (Neo4j 5.x has native vector search)
-- [ ] If latency acceptable: migrate writes to Neo4j, keep PostgreSQL as backup
-- [ ] If not: keep dual-write architecture permanently (PostgreSQL for speed, Neo4j for intelligence)
-- [ ] Either way: the GraphRAG retrieval layer stays on Neo4j
+- [ ] Add vector index to Neo4j Memory nodes (Neo4j 5.x native vector search)
+- [ ] Sync embeddings from PG `text_embeddings` table into Neo4j Memory nodes
+- [ ] Rewrite `graph_retrieval.py` to do semantic search in Neo4j (replaces pgvector for reads)
+- [ ] Update `memory_wrapper.py`: wake/search read entirely from Neo4j
+- [ ] Keep PG writes unchanged — sleep pipeline still writes to PG, `graph_sync.py` pushes to Neo4j after
+- [ ] Test: agents wake + search using only Neo4j, PG is never queried for reads
 
-**Decision point**: Full migration vs permanent dual-write depends on Neo4j write performance under load.
+**Result**: PG = write-ahead log. Neo4j = all retrieval. Drift-memory modules keep working.
+
+### Phase 5 — PostgreSQL Sunset (Later)
+**Goal**: Rewrite `db_adapter.py` to write directly to Neo4j, drop PostgreSQL entirely.
+
+- [ ] Rewrite `db_adapter.py` to target Neo4j (one file swap, all modules follow)
+- [ ] Migrate session tracking, KV store, lessons to Neo4j
+- [ ] Benchmark write latency — Neo4j must handle sleep-phase writes within 5s
+- [ ] If acceptable: drop PostgreSQL, single database
+- [ ] If not: keep dual-write permanently (PG for speed, Neo4j for intelligence)
+
+**Decision point**: Full migration vs permanent dual-write depends on Neo4j write performance.
 
 ## Docker Setup
 
@@ -200,13 +221,13 @@ neo4j:
 ## File Plan
 
 ```
-shared/drift-memory/
-├── neo4j_adapter.py          # Connection pool, Cypher helpers
-├── graph_sync.py             # PostgreSQL → Neo4j incremental sync
-├── community_detection.py    # Leiden algorithm, community tracking
-├── community_summarizer.py   # Hierarchical LLM summaries
-├── graphrag_retrieval.py     # Local/global/map-reduce retrieval
-└── graphrag_config.py        # Tuning parameters
+shared/graphrag/
+├── neo4j_adapter.py          # Connection pool, Cypher helpers          ✅
+├── graph_sync.py             # PostgreSQL → Neo4j full + incremental   ✅
+├── community_detection.py    # Leiden algorithm (igraph + leidenalg)   ✅
+├── community_summarizer.py   # LLM summaries per community            ✅
+├── graph_retrieval.py        # Community-aware retrieval pipeline      ✅
+└── graphrag_config.py        # Tuning parameters                      (planned)
 ```
 
 ## Why Not Just Use PostgreSQL AGE?

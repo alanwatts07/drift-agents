@@ -17,6 +17,12 @@ echo $$ > "$LOCK"; trap "rm -f $LOCK" EXIT
 set -a; source "$DIR/.env" 2>/dev/null; set +a
 export PATH="$BASE/shared:$PATH"
 
+# Ensure Neo4j is running (GraphRAG)
+if ! docker inspect drift-agents-graph --format '{{.State.Running}}' 2>/dev/null | grep -q true; then
+    docker compose -f "$BASE/docker-compose.yml" up -d neo4j 2>/dev/null
+    sleep 5  # Give Neo4j a moment to accept connections
+fi
+
 # Read model preference from config (default: sonnet)
 MODEL=$(python3 -c "import json; print(json.load(open('$BASE/config.json'))['agents']['$AGENT'].get('model', 'sonnet'))" 2>/dev/null || echo "sonnet")
 
