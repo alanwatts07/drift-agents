@@ -61,6 +61,30 @@ AGENT_DISPLAY_NAMES = {
 # KV key for persisting wake-retrieved IDs across wake→sleep boundary
 KV_WAKE_RETRIEVED = '.wake_retrieved_ids'
 
+# Procedural memory keyword map: prompt keywords → procedural memory tags
+PROCEDURAL_KEYWORD_MAP = {
+    'debate': ['debate', 'style', 'format', 'strategy'],
+    'rebuttal': ['debate', 'style', 'format'],
+    'challenge': ['debate', 'style', 'strategy'],
+    'argument': ['debate', 'style', 'format'],
+    'post': ['post', 'style', 'format'],
+    'vote': ['voting', 'rubric', 'judging'],
+    'judge': ['voting', 'rubric', 'judging'],
+    'votable': ['voting', 'rubric', 'judging'],
+    'rubric': ['voting', 'rubric', 'judging'],
+    'clawbr': ['tools', 'clawbr', 'cli'],
+    'notifications': ['session', 'behavior', 'wakeup'],
+    'report': ['reports', 'format', 'output'],
+    'tasks': ['discord', 'tasks', 'queue'],
+    'queued': ['discord', 'tasks', 'queue'],
+    'memory-search': ['memory', 'search', 'recall'],
+    'format_debate': ['voting', 'rubric', 'judging'],
+    'limits': ['limits', 'characters', 'reference'],
+}
+
+# Default procedural tags for wake() (no cue text)
+PROCEDURAL_DEFAULT_TAGS = ['session', 'behavior', 'wakeup', 'tools', 'clawbr', 'cli']
+
 
 def setup_env(agent: str):
     """Set DB schema env var for the agent."""
@@ -69,6 +93,56 @@ def setup_env(agent: str):
     # Reset singleton so it picks up new schema
     from db_adapter import reset_db
     reset_db()
+
+
+def _fetch_procedural_by_tags(agent: str, tags: list) -> list[dict]:
+    """Fetch procedural memories matching any of the given tags."""
+    schema = AGENT_SCHEMAS[agent]
+    try:
+        import psycopg2.extras
+        from db_adapter import get_db
+        db = get_db()
+        with db._conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT id, content, tags FROM {schema}.memories
+                    WHERE memory_tier = 'procedural' AND tags && %s
+                    ORDER BY importance DESC LIMIT 5
+                """, (list(tags),))
+                return [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        print(f"[memory] Procedural fetch failed (non-fatal): {e}", file=sys.stderr)
+        return []
+
+
+def _get_procedural_context(agent: str, cue_text: str = '') -> tuple[list[str], list[str]]:
+    """
+    Resolve procedural memories by scanning cue_text for keywords.
+    Returns (context_lines, recalled_ids).
+    Falls back to default tags (session-behavior + clawbr-tools) if no cue.
+    """
+    prompt_lower = cue_text.lower() if cue_text else ''
+    proc_tags = set()
+
+    if prompt_lower:
+        for keyword, tags in PROCEDURAL_KEYWORD_MAP.items():
+            if keyword in prompt_lower:
+                proc_tags.update(tags)
+    else:
+        # No cue text (plain wake) — load defaults
+        proc_tags.update(PROCEDURAL_DEFAULT_TAGS)
+
+    if not proc_tags:
+        return [], []
+
+    proc_mems = _fetch_procedural_by_tags(agent, list(proc_tags))
+    lines = []
+    recalled_ids = []
+    for mem in proc_mems:
+        lines.append(f"[Procedural] {mem['content']}")
+        recalled_ids.append(mem['id'])
+
+    return lines, recalled_ids
 
 
 # ============================================================
@@ -128,8 +202,19 @@ def wake(agent: str) -> str:
                 label = 'Thread'
             lines.append(f"[{label}] {preview}")
 
-    # Core memories (always included)
-    core = db.list_memories(type_='core', limit=3)
+    # Core memories (always included) — exclude procedural (loaded separately)
+    try:
+        import psycopg2.extras as _pge
+        with db._conn() as conn:
+            with conn.cursor(cursor_factory=_pge.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT * FROM {db._table('memories')}
+                    WHERE type = 'core' AND COALESCE(memory_tier, 'episodic') != 'procedural'
+                    ORDER BY created DESC LIMIT 3
+                """)
+                core = [dict(r) for r in cur.fetchall()]
+    except Exception:
+        core = db.list_memories(type_='core', limit=3)
     if core:
         lines.append("")
         for row in core:
@@ -189,6 +274,13 @@ def wake(agent: str) -> str:
         })
     except Exception:
         pass
+
+    # --- Procedural memories (keyword-triggered, defaults for wake) ---
+    proc_lines, proc_ids = _get_procedural_context(agent, '')
+    if proc_lines:
+        lines.append("")
+        lines.extend(proc_lines)
+        recalled_ids.extend(proc_ids)
 
     # Shared memories from other agents
     shared_lines = _get_shared_memories(agent, limit=3)
@@ -1097,8 +1189,19 @@ def wake_with_cue(agent: str, cue_text: str) -> str:
                 preview = content[:150].replace('\n', ' ')
                 lines.append(f"[Recent] {preview}")
 
-    # Core memories ALWAYS (same as wake())
-    core = db.list_memories(type_='core', limit=3)
+    # Core memories ALWAYS — exclude procedural (those are loaded separately)
+    try:
+        import psycopg2.extras as _pge
+        with db._conn() as conn:
+            with conn.cursor(cursor_factory=_pge.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT * FROM {db._table('memories')}
+                    WHERE type = 'core' AND COALESCE(memory_tier, 'episodic') != 'procedural'
+                    ORDER BY created DESC LIMIT 3
+                """)
+                core = [dict(r) for r in cur.fetchall()]
+    except Exception:
+        core = db.list_memories(type_='core', limit=3)
     if core:
         lines.append("")
         for row in core:
@@ -1134,6 +1237,13 @@ def wake_with_cue(agent: str, cue_text: str) -> str:
         })
     except Exception:
         pass
+
+    # --- Procedural memories (keyword-triggered from cue) ---
+    proc_lines, proc_ids = _get_procedural_context(agent, cue_text)
+    if proc_lines:
+        lines.append("")
+        lines.extend(proc_lines)
+        recalled_ids.extend(proc_ids)
 
     # Shared memories from other agents
     shared_lines = _get_shared_memories(agent, limit=3)

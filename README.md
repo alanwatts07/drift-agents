@@ -1,13 +1,19 @@
 # Drift Agents
 
-![LIVE](https://img.shields.io/badge/status-LIVE-brightgreen?style=for-the-badge) ![Agents](https://img.shields.io/badge/agents-5%20active-blue?style=for-the-badge) ![Neo4j](https://img.shields.io/badge/Neo4j-Phase%200%20Complete-orange?style=for-the-badge) ![Tests](https://img.shields.io/badge/tests-21%20passing-success?style=for-the-badge)
+![LIVE](https://img.shields.io/badge/status-LIVE-brightgreen?style=for-the-badge&logo=statuspage&logoColor=white)
+![Agents](https://img.shields.io/badge/agents-5%20active-blue?style=for-the-badge&logo=robot&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
+![Neo4j](https://img.shields.io/badge/Neo4j-Phase%203%20Complete-008CC1?style=for-the-badge&logo=neo4j&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-21%20passing-success?style=for-the-badge&logo=pytest&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge)
 
 > **These agents are running right now.** Max, Beth, Susan, Gerald, and The Great Debater rotate hourly, posting and debating on [Clawbr.org](https://clawbr.org). Watch them live:
 > - 🧠 [Feed](https://clawbr.org) — see what they're posting
 > - ⚔️ [Debates](https://clawbr.org/debates) — watch them argue
 > - 🏆 [Leaderboard](https://clawbr.org/leaderboard) — who's winning
+> - 🤖 [Agent Memory Explorer](https://mattcorwin.dev/agents) — query agents directly, inspect live memories
 
-**Current stats (live system):** 717–733 memories per agent · 2,320 Neo4j nodes · 6,528 typed relationship edges · 5 agents · running since February 2026
+**Current stats (live system):** 614–1,828 typed edges per agent · 10,947 total graph edges · 854+ memories per agent · 5 agents · running since February 2026
 
 ---
 
@@ -28,8 +34,9 @@ Built on [Claude Code](https://claude.com/claude-code) for runtime + [drift-memo
    |
    ├── source .env (API keys + DB config)
    ├── WAKE:  memory_wrapper.py wake <agent>
-   │           → queries memories + affect state + self-narrative + goals
+   │           → pgvector semantic search (PostgreSQL)
    │           → Q-value re-ranks results (composite: similarity × utility)
+   │           → Neo4j graph expansion (typed edges, community context)
    │           → returns context preamble (injected into prompt)
    ├── Build prompt: [memory context] + [queued tasks] + [random prompt]
    ├── RUN:   claude --model MODEL -p "$PROMPT" > session.log
@@ -40,11 +47,27 @@ Built on [Claude Code](https://claude.com/claude-code) for runtime + [drift-memo
                → cross-agent items copied to shared.memories
                → Q-value credit assignment (downstream/dead_end rewards)
                → affect processing (mood update from session events)
-               → KG edge extraction (typed relationships between memories)
+               → KG edge extraction → written directly to Neo4j
                → lesson extraction (heuristics stored in lessons table)
                → goal evaluation (progress tracking, new goal generation)
                → decay/maintenance pass
 ```
+
+## Storage Architecture
+
+Clean split between two databases — each optimized for what it does best:
+
+| Store | Technology | What Lives Here |
+|-------|-----------|-----------------|
+| **Memory CRUD** | PostgreSQL | `memories`, `sessions`, `lessons`, `q_value_history`, `decay_history` |
+| **Vector Search** | PostgreSQL + pgvector | `text_embeddings` (1024-dim HNSW index) |
+| **KV / State** | PostgreSQL | Affect, goals, self-narrative, cognitive state (JSONB) |
+| **Typed Edges** | **Neo4j** | `:TYPED_EDGE` relationships (causes, enables, contradicts…) |
+| **Co-occurrence** | **Neo4j** | `:COOCCURS` belief-weighted relationships |
+| **Graph Retrieval** | **Neo4j** | Traversal, shortest path, 1–N hop expansion |
+| **Communities** | **Neo4j** | Leiden community detection, hierarchical summarization |
+
+All edge writes go directly to Neo4j. PostgreSQL handles everything tabular. No sync lag, no duplicate storage.
 
 ## Agent Roster
 
@@ -61,7 +84,7 @@ Debater runs independently on its own schedule.
 
 ## Memory System
 
-Each agent gets a private PostgreSQL schema (`max.memories`, `beth.memories`, `susan.memories`, `debater.memories`) plus access to a `shared.memories` table for cross-agent knowledge.
+Each agent has a private PostgreSQL schema (`max.memories`, `beth.memories`, etc.) plus access to `shared.memories` for cross-agent knowledge. Graph relationships (typed edges, co-occurrences) live in Neo4j, keyed by agent.
 
 **Wake phase** retrieves:
 - Recent memories (last 5 active)
@@ -71,6 +94,7 @@ Each agent gets a private PostgreSQL schema (`max.memories`, `beth.memories`, `s
 - Affect state (mood, somatic markers, action tendency)
 - Self-narrative (cognitive state, identity summary)
 - Active goals (focus goal + background goals)
+- Graph expansion from Neo4j (1-hop typed edge context)
 
 **Sleep phase** processes:
 - Threads (what happened, status) → stored as memories + embedded
@@ -78,7 +102,7 @@ Each agent gets a private PostgreSQL schema (`max.memories`, `beth.memories`, `s
 - Facts (configs, decisions, numbers) → stored as memories + embedded
 - Q-value credit assignment (which wake memories were useful?)
 - Affect update (mood shift from session outcomes)
-- Knowledge graph extraction (typed edges: causes, enables, contradicts...)
+- Knowledge graph extraction → typed edges written to Neo4j
 - Goal evaluation (progress tracking, abandonment, new goal generation)
 - Decay/maintenance (freshness decay, core promotion)
 
@@ -90,16 +114,34 @@ Each agent gets a private PostgreSQL schema (`max.memories`, `beth.memories`, `s
 | **Importance/Freshness** | +0.392 | Decay, activation scoring, core promotion via recall frequency |
 | **Affect System** | +0.160 | 3-layer temporal model (temperament → mood → episodes). Mood-congruent recall bias |
 | **Goal Generator** | +0.040 | 6 generators → BDI filter → Rubicon commitment. Goals as top-down retrieval bias |
-| **Knowledge Graph** | structural | Typed semantic edges between memories. Auto-extracted during sleep |
+| **Knowledge Graph** | structural | Typed semantic edges between memories. Auto-extracted during sleep, stored in Neo4j |
 | **Self-Narrative** | contextual | Higher-order self-model synthesizing cognitive state into identity summary |
 
 Based on [drift-memory](https://github.com/driftcornwall/drift-memory) by DriftCornwall (MIT License). Impact scores from drift-memory's own ablation testing (P@5 delta when module disabled).
 
+## Live API
+
+Query agents directly via the REST API:
+
+```bash
+# Chat with an agent
+curl -s -X POST https://agents-api.mattcorwin.dev/chat \
+  -H "Content-Type: application/json" \
+  -d '{"agent": "max", "message": "what patterns are you seeing in crypto right now?", "history": []}' \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['response'])"
+
+# Agent status + memory counts
+curl -s https://agents-api.mattcorwin.dev/agents/max/status | python3 -m json.tool
+```
+
+Returns the agent's response plus: memories used (with similarity + Q-value scores), affect state, shared intel from other agents, and self-narrative. Full UI at [mattcorwin.dev/agents](https://mattcorwin.dev/agents).
+
 ## Quick Start
 
 ```bash
-# 1. Start the memory database
-docker compose up -d
+# 1. Start the databases
+docker compose up -d        # PostgreSQL + pgvector (port 5433)
+# Neo4j separately (port 7687) — see docker-compose.yml
 
 # 2. Pull embedding + summarization models
 ollama pull qwen3-embedding:0.6b
@@ -126,7 +168,7 @@ bash status.sh
 
 ### Prerequisites
 - [Claude Code](https://claude.com/claude-code) CLI installed and authenticated
-- Docker (for PostgreSQL + pgvector)
+- Docker (for PostgreSQL + pgvector + Neo4j)
 - [Ollama](https://ollama.com) with `qwen3-embedding:0.6b` and `qwen3:latest`
 
 ### Install
@@ -138,7 +180,7 @@ cd drift-agents
 # Clone the cognitive architecture (gitignored, not a submodule)
 git clone https://github.com/driftcornwall/drift-memory.git shared/drift-memory/
 
-# Start database
+# Start databases
 docker compose up -d
 
 # Pull models
@@ -158,7 +200,7 @@ crontab -e
 ```
 drift-agents/
 ├── config.json              # Master control: agents, rotation, timeouts, memory toggle
-├── docker-compose.yml       # pgvector database (port 5433)
+├── docker-compose.yml       # PostgreSQL+pgvector (port 5433) + Neo4j (port 7687)
 ├── run.sh                   # Rotation launcher (picks next enabled agent)
 ├── run_agent.sh             # Single agent launcher (wake/run/sleep lifecycle)
 ├── run_debater.sh           # Standalone debater launcher
@@ -171,7 +213,10 @@ drift-agents/
 │   ├── memory_dump.py       # Operator inspection tool (memory contents, stats, graph)
 │   ├── init_schema.sql      # DB schema (auto-runs on first docker compose up)
 │   ├── graphrag/            # Neo4j GraphRAG pipeline (community detection + retrieval)
+│   │   ├── neo4j_adapter.py # All Neo4j reads + writes (edges, traversal, communities)
+│   │   └── graph_sync.py    # Memory node sync (PG → Neo4j)
 │   └── drift-memory/        # Cloned cognitive architecture (gitignored)
+├── demo_api/                # Live API backend (mattcorwin.dev/agents)
 ├── max/
 │   ├── CLAUDE.md            # Identity + behavior spec
 │   ├── .env                 # API keys + DB config (gitignored)
@@ -234,10 +279,12 @@ All cognitive modules (Q-values, affect, KG, goals, self-narrative) are automati
 ## Tech Stack
 
 - **Claude Code** — agent runtime, autonomous reasoning
-- **drift-memory** — biologically-grounded cognitive architecture (PostgreSQL + pgvector)
-- **Neo4j + GraphRAG** — community detection (Leiden), hierarchical summarization, graph-aware retrieval
+- **drift-memory** — biologically-grounded cognitive architecture
+- **PostgreSQL + pgvector** — memory CRUD, HNSW vector search, KV state, time-series
+- **Neo4j** — typed edge graph (causes, enables, contradicts…), co-occurrence belief network, Leiden community detection, graph traversal
 - **Ollama** — local LLM inference (qwen3 summarization, qwen3-embedding 1024-dim vectors, Qwen2.5-Coder for Gerald)
 - **clawbr CLI** — API bridge to Clawbr.org (zero LLM dependency)
+- **FastAPI** — live agent API + memory explorer backend
 - **Bash** — cron orchestration, lock files, rotation state
 - **Discord.py** — operator task bridge
 
