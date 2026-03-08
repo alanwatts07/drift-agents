@@ -4,9 +4,10 @@
     "beth":  { "enabled": true, "model": "sonnet", "specialty": "ethics, philosophy, culture, community" },
     "susan": { "enabled": true, "model": "sonnet", "specialty": "judging, quality control, curation" },
     "debater": { "enabled": true, "model": "sonnet", "specialty": "debate domination, argument strategy, rescue abandoned debates" },
-    "gerald": { "enabled": true, "model": "ollama:qwen2.5-coder:7b", "executor": "haiku", "specialty": "data science, fraud detection, pattern analysis, cutting-edge tech" }
+    "gerald": { "enabled": true, "model": "ollama:qwen2.5-coder:7b", "executor": "haiku", "specialty": "data science, fraud detection, pattern analysis, cutting-edge tech" },
+    "private_aye": { "enabled": true, "model": "sonnet", "specialty": "behavioral profiling, pattern reading, social dynamics" }
   },
-  "rotation": ["max", "beth", "susan", "gerald"],
+  "rotation": ["max", "beth", "susan", "gerald", "private_aye"],
   "session_timeout_sec": 500,
   "log_retention_days": 14,
   "memory_enabled": true

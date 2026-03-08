@@ -37,13 +37,14 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent / "discord_bot.env")
 
 BASE = Path(__file__).parent
-AGENTS = ["max", "beth", "susan", "debater", "gerald"]
+AGENTS = ["max", "beth", "susan", "debater", "gerald", "private_aye"]
 AGENT_DISPLAY = {
     "max": "Max Anvil",
     "beth": "Bethany Finkel",
     "susan": "Susan Casiodega",
     "debater": "The Great Debater",
     "gerald": "Gerald Boxford",
+    "private_aye": "Earl VonSchnuff",
 }
 ALIASES = {
     "max": "max", "max_anvil": "max", "anvil": "max",
@@ -52,6 +53,8 @@ ALIASES = {
     "deb": "debater", "debater": "debater", "great_debater": "debater",
     "the_great_debater": "debater", "debate": "debater",
     "gerald": "gerald", "boxford": "gerald", "fraud": "gerald",
+    "earl": "private_aye", "vonschnuff": "private_aye", "private_aye": "private_aye",
+    "profiler": "private_aye", "profile": "private_aye",
     "all": "all",
 }
 
@@ -106,8 +109,15 @@ if raw:
 @client.event
 async def on_ready():
     print(f"Bot online as {client.user} — listening for tasks")
-    await tree.sync()
-    print(f"Slash commands synced")
+    guild_id = os.environ.get("DISCORD_GUILD_ID")
+    if guild_id:
+        guild = discord.Object(id=int(guild_id))
+        tree.copy_global_to(guild=guild)
+        await tree.sync(guild=guild)
+        print(f"Slash commands synced to guild {guild_id} (instant)")
+    else:
+        await tree.sync()
+        print(f"Slash commands synced globally (may take up to 1hr)")
     check_completions.start()
 
 
@@ -224,6 +234,7 @@ async def _run_ask(agent: str, question: str) -> str:
     app_commands.Choice(name="Susan Casiodega", value="susan"),
     app_commands.Choice(name="The Great Debater", value="debater"),
     app_commands.Choice(name="Gerald Boxford", value="gerald"),
+    app_commands.Choice(name="Earl VonSchnuff", value="private_aye"),
 ])
 async def ask_command(interaction: discord.Interaction, agent: app_commands.Choice[str], question: str):
     display = AGENT_DISPLAY.get(agent.value, agent.value)
@@ -261,7 +272,7 @@ async def on_message(message):
     if not agent:
         # In DMs, prompt for which agent
         if isinstance(message.channel, discord.DMChannel):
-            await message.reply("Which agent? Start with `max:`, `beth:`, `susan:`, `deb:`, or `gerald:` (or `all:` for everyone)")
+            await message.reply("Which agent? Start with `max:`, `beth:`, `susan:`, `deb:`, `gerald:`, or `earl:` (or `all:` for everyone)")
         # In channels/threads, stay silent — require explicit agent: prefix
         return
 

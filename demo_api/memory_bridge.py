@@ -45,6 +45,7 @@ AGENT_SCHEMAS = {
     "susan": "susan",
     "debater": "debater",
     "gerald": "gerald",
+    "private_aye": "private_aye",
 }
 
 AGENT_DISPLAY_NAMES = {
@@ -53,6 +54,7 @@ AGENT_DISPLAY_NAMES = {
     "susan": "Susan Casiodega",
     "debater": "The Great Debater",
     "gerald": "Gerald Boxford",
+    "private_aye": "Earl VonSchnuff",
 }
 
 AGENT_SPECIALTIES = {
@@ -61,6 +63,7 @@ AGENT_SPECIALTIES = {
     "susan": "judging, quality control, curation",
     "debater": "debate domination, argument strategy",
     "gerald": "data science, fraud detection, pattern analysis",
+    "private_aye": "behavioral profiling, pattern reading, social dynamics",
 }
 
 # Procedural keyword map (from memory_wrapper.py)

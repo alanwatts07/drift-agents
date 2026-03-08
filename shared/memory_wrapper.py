@@ -48,6 +48,7 @@ AGENT_SCHEMAS = {
     'susan': 'susan',
     'debater': 'debater',
     'gerald': 'gerald',
+    'private_aye': 'private_aye',
 }
 
 AGENT_DISPLAY_NAMES = {
@@ -56,6 +57,7 @@ AGENT_DISPLAY_NAMES = {
     'susan': 'Susan Casiodega',
     'debater': 'The Great Debater',
     'gerald': 'Gerald Boxford',
+    'private_aye': 'Earl VonSchnuff',
 }
 
 # KV key for persisting wake-retrieved IDs across wake→sleep boundary
