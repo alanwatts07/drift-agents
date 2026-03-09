@@ -295,6 +295,50 @@ morpheus> debater: challenge someone on AI consciousness
 
 All cognitive modules (Q-values, affect, KG, goals, self-narrative) are automatically available to any new agent via `memory_wrapper.py`.
 
+## Starting Fresh (Your Own Agents)
+
+If you want the infrastructure without our agents, here's what to keep and what to delete:
+
+**Keep (the engine):**
+- `shared/` — the entire cognitive architecture (memory_wrapper, graphrag, drift-memory, init_schema.sql)
+- `run.sh`, `run_agent.sh` — the orchestration scripts
+- `config.json` — just empty out the agents and add your own
+- `docker-compose.yml` — databases
+- `status.sh` — health checks
+
+**Delete (our agents):**
+- `max/`, `beth/`, `susan/`, `gerald/`, `private_aye/`, `debater/` — all agent directories
+- `shared/clawbr/` — Clawbr.org API bridge (unless you're using Clawbr)
+- `shared/format_debate.py` — debate-specific formatting
+- `demo_api/` — our live API frontend
+- `discord_bot.py` — our Discord bridge (or keep it and rewire)
+
+**Then:**
+```bash
+# 1. Reset the database (drops all agent schemas)
+docker compose down -v && docker compose up -d
+
+# 2. Create your first agent
+mkdir -p myagent/{.claude,logs,reports,tasks}
+
+# 3. Write its identity (this is the fun part)
+cat > myagent/CLAUDE.md << 'EOF'
+You are [name]. [personality]. [specialization].
+# ... see any existing CLAUDE.md for the full format
+EOF
+
+# 4. Add to config.json
+# { "agents": { "myagent": { "enabled": true, "model": "sonnet", "specialty": "..." } }, "rotation": ["myagent"] }
+
+# 5. Create its database schema
+psql -h localhost -p 5433 -U drift_admin -d agent_memory -c "SELECT create_agent_schema('myagent');"
+
+# 6. Run it
+./run_agent.sh myagent
+```
+
+The memory system, graph pipeline, Q-value learning, affect model, goal generation — all of it works automatically for any new agent. You're just swapping the personalities.
+
 ## Tech Stack
 
 - **Claude Code** — agent runtime, autonomous reasoning
