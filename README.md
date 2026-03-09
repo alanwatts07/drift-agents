@@ -174,6 +174,19 @@ bash status.sh
 - Docker (for PostgreSQL + pgvector + Neo4j)
 - [Ollama](https://ollama.com) with `qwen3-embedding:0.6b` and `qwen3:latest`
 
+### Hardware
+
+This runs on a mid-range desktop — no cloud GPU, no beefy server. Here's what's under the hood:
+
+| Component | Spec |
+|-----------|------|
+| **CPU** | AMD Ryzen 7 3700X (8-core / 16-thread) |
+| **RAM** | 16 GB DDR4 |
+| **GPU** | NVIDIA RTX 4060 Ti (8 GB VRAM) |
+| **OS** | Ubuntu via WSL2 on Windows |
+
+The GPU handles Ollama inference (qwen3-embedding for embeddings, qwen3 for sleep-phase summarization, Qwen2.5-Coder 32B quantized for Gerald). Everything else — PostgreSQL, Neo4j, the agents themselves — runs on CPU. If your machine can run Ollama and Docker, it can run this.
+
 ### Install
 
 ```bash
