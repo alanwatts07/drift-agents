@@ -45,14 +45,11 @@ def pull_agent_graph(graph, agent: str) -> tuple:
     """
     nodes = graph.query("""
         MATCH (m:Memory {agent: $agent})
-        RETURN m.id AS id, m.content AS content, m.type AS type,
-               m.importance AS importance, m.q_value AS q_value,
-               m.tags AS tags, m.created AS created,
-               m.memory_tier AS memory_tier
+        RETURN m.id AS id, m.type AS type, m.importance AS importance
     """, {"agent": agent})
 
     edges = graph.query("""
-        MATCH (m1:Memory {agent: $agent})-[r:COLLABORATOR]->(m2:Memory {agent: $agent})
+        MATCH (m1:Memory {agent: $agent})-[r:TYPED_EDGE]->(m2:Memory {agent: $agent})
         RETURN m1.id AS source, m2.id AS target, r.confidence AS weight
     """, {"agent": agent})
 
@@ -74,10 +71,8 @@ def build_igraph(nodes: list, edges: list) -> tuple:
 
     # Add node attributes
     g.vs["memory_id"] = [n["id"] for n in nodes]
-    g.vs["content"] = [n.get("content", "")[:200] for n in nodes]
-    g.vs["type"] = [n.get("type", "active") for n in nodes]
-    g.vs["importance"] = [n.get("importance", 0.5) for n in nodes]
-    g.vs["tags"] = [n.get("tags", []) for n in nodes]
+    g.vs["type"] = [n.get("type") or "active" for n in nodes]
+    g.vs["importance"] = [n.get("importance") or 0.5 for n in nodes]
 
     # Add edges (skip if either node missing)
     edge_list = []
@@ -129,21 +124,9 @@ def compute_community_metadata(g: ig.Graph, membership: list, agent: str) -> lis
         members = member_indices
         member_ids = [g.vs[i]["memory_id"] for i in members]
 
-        # Aggregate tags
-        all_tags = []
-        for i in members:
-            tags = g.vs[i]["tags"]
-            if tags:
-                all_tags.extend(tags)
-        top_tags = [tag for tag, _ in Counter(all_tags).most_common(5)]
-
         # Aggregate importance
         importances = [g.vs[i]["importance"] or 0.5 for i in members]
         avg_importance = sum(importances) / len(importances) if importances else 0.5
-
-        # Content preview — top 3 by importance
-        by_importance = sorted(members, key=lambda i: g.vs[i]["importance"] or 0, reverse=True)
-        previews = [g.vs[i]["content"][:100] for i in by_importance[:3]]
 
         # Memory types breakdown
         types = Counter(g.vs[i]["type"] for i in members)
@@ -154,10 +137,8 @@ def compute_community_metadata(g: ig.Graph, membership: list, agent: str) -> lis
             "local_id": comm_id,
             "size": len(members),
             "member_ids": member_ids,
-            "top_tags": top_tags,
             "avg_importance": round(avg_importance, 3),
             "type_breakdown": dict(types),
-            "previews": previews,
         })
 
     return results
@@ -191,19 +172,15 @@ def write_communities_to_neo4j(graph, agent: str, membership: list,
             MERGE (c:Community {id: $id})
             SET c.agent = $agent,
                 c.size = $size,
-                c.top_tags = $top_tags,
                 c.avg_importance = $avg_importance,
                 c.type_breakdown = $type_breakdown,
-                c.previews = $previews,
                 c.updated_at = datetime()
         """, {
             "id": comm["community_id"],
             "agent": comm["agent"],
             "size": comm["size"],
-            "top_tags": comm["top_tags"],
             "avg_importance": comm["avg_importance"],
             "type_breakdown": json.dumps(comm["type_breakdown"]),
-            "previews": comm["previews"],
         })
 
         # Link memories to their community
@@ -256,9 +233,9 @@ def detect_communities(agent: str, resolution: float = 1.0):
 
     # Print summary
     for comm in communities[:10]:
-        tags_str = ", ".join(comm["top_tags"][:3]) if comm["top_tags"] else "no tags"
+        types_str = ", ".join(f"{k}:{v}" for k, v in comm["type_breakdown"].items())
         print(f"    {comm['community_id']}: {comm['size']} memories "
-              f"(imp={comm['avg_importance']:.2f}) [{tags_str}]")
+              f"(imp={comm['avg_importance']:.2f}) [{types_str}]")
     if len(communities) > 10:
         print(f"    ... and {len(communities) - 10} more communities")
 

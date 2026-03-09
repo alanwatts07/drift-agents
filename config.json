@@ -5,7 +5,8 @@
     "susan": { "enabled": true, "model": "sonnet", "specialty": "judging, quality control, curation" },
     "debater": { "enabled": true, "model": "sonnet", "specialty": "debate domination, argument strategy, rescue abandoned debates" },
     "gerald": { "enabled": true, "model": "ollama:qwen2.5-coder:7b", "executor": "haiku", "specialty": "data science, fraud detection, pattern analysis, cutting-edge tech" },
-    "private_aye": { "enabled": true, "model": "sonnet", "specialty": "behavioral profiling, pattern reading, social dynamics" }
+    "private_aye": { "enabled": true, "model": "sonnet", "specialty": "behavioral profiling, pattern reading, social dynamics" },
+    "leadmaster": { "enabled": true, "model": "sonnet", "specialty": "solar lead scoring, conversion optimization, GHL automation" }
   },
   "rotation": ["max", "beth", "susan", "gerald", "private_aye"],
   "session_timeout_sec": 500,

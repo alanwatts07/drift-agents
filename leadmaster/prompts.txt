@@ -1,0 +1,8 @@
+Check the task queue for new leads. Score each one, execute the appropriate actions, and log your reasoning.
+Review yesterday's leads. Did any warm leads go cold? Did any cool leads convert? Update your mental model.
+Generate a daily lead summary report — total leads, breakdown by source, average score, conversion rate trends.
+Check for leads that haven't been followed up on. Flag any that are aging without action.
+Analyze your scoring accuracy — compare your initial scores against actual outcomes. What patterns are you missing?
+Review which lead sources are performing best this week. Should we shift ad spend or messaging?
+Look at the calendar bookings vs form fills ratio. What's the conversion delta? Write a brief insight.
+Check for duplicate leads across both sources. Flag any contacts that submitted through both sites.
