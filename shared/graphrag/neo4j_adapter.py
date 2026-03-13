@@ -447,13 +447,17 @@ class GraphDB:
     # ------------------------------------------------------------------
 
     def edge_stats(self, agent: str) -> dict:
-        """Return counts of TYPED_EDGE, COOCCURS, and Observation nodes for an agent."""
+        """Return counts of typed edges, COOCCURS, and Observation nodes for an agent."""
+        # Count all non-system edges between Memory nodes owned by this agent
         typed_rows = self.query(
-            "MATCH ()-[r:TYPED_EDGE {agent: $agent}]->() RETURN count(r) AS count",
+            "MATCH (m1:Memory {agent: $agent})-[r]->(m2:Memory) "
+            "WHERE type(r) <> 'OWNS' AND type(r) <> 'COOCCURS' "
+            "RETURN count(r) AS count",
             {"agent": agent},
         )
         cooccur_rows = self.query(
-            "MATCH ()-[r:COOCCURS {agent: $agent}]-() RETURN count(DISTINCT r) AS count",
+            "MATCH (m1:Memory {agent: $agent})-[r:COOCCURS]-(m2:Memory) "
+            "RETURN count(DISTINCT r) AS count",
             {"agent": agent},
         )
         obs_rows = self.query(
