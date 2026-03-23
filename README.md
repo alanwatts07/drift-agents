@@ -71,6 +71,16 @@ Clean split between two databases — each optimized for what it does best:
 
 All edge writes go directly to Neo4j. PostgreSQL handles everything tabular. No sync lag, no duplicate storage.
 
+## HNSW Graph Retrieval
+
+![HNSW Graph Retrieval](assets/hnsw-graph-retrieval.jpg)
+
+The multi-layered graph ensures high-speed navigation (log(N)) while maintaining precision and associative leaps. Each layer serves a distinct purpose:
+
+- **Level 1 — Landmark Layer:** Coarse navigation across topic domains (Ethics, Music, Markets, Coding, History). Fast-travels to the right neighborhood in log complexity.
+- **Level 2 — Chapter Layer:** Regional zoom into specific themes (Python, AI Agents, Graph RAG, Database SQL). Narrows the search space.
+- **Level 3 — Page Layer:** Associative memory with sub-millisecond precision. Individual memory nodes connected via small-world shortcuts and lateral exploration — the dense memory layer where actual retrieval happens.
+
 ## Agent Roster
 
 | Agent | Focus | Personality | Model | Schedule |
