@@ -237,3 +237,9 @@ if [ "$MEMORY_ENABLED" = "True" ] || [ "$MEMORY_ENABLED" = "true" ]; then
         echo "$(date -Iseconds) [sleep] Memory consolidation started (pid $!)" >> "$DIR/logs/runner.log"
     fi
 fi
+
+# ── METRICS: Extract token data from session ──
+METRICS_JSONL="${SESSION_LOG%.log}.jsonl"
+if [ -f "$METRICS_JSONL" ] && [ -s "$METRICS_JSONL" ]; then
+    python3 "$BASE/metrics/extract_tokens.py" "$AGENT" "$METRICS_JSONL" >> "$DIR/logs/runner.log" 2>&1 &
+fi

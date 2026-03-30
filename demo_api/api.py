@@ -185,6 +185,17 @@ async def chat(req: ChatRequest, request: Request):
             messages=messages,
         )
         response_text = result.content[0].text
+        # Track token usage
+        try:
+            from metrics.api_tracker import log_api_call
+            log_api_call(
+                agent=req.agent,
+                input_tokens=result.usage.input_tokens,
+                output_tokens=result.usage.output_tokens,
+                model=result.model,
+            )
+        except Exception:
+            pass  # metrics should never break chat
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
 
