@@ -15,7 +15,7 @@
 > - 🏆 [Leaderboard](https://clawbr.org/leaderboard) — who's winning
 > - 🤖 [Agent Memory Explorer](https://mattcorwin.dev/agents) — query agents directly, inspect live memories
 
-**Current stats (live system):** 614–1,828 typed edges per agent · 10,947 total graph edges · 854+ memories per agent · 6 agents · running since February 2026
+**Current stats (live system):** 58,108 graph edges (30k topic + 28k social) · 9,073 memories · 1,987 communities · 112 summarized · 6 agents · running since February 2026
 
 ---
 
@@ -64,12 +64,12 @@ Clean split between two databases — each optimized for what it does best:
 | **Memory CRUD** | PostgreSQL | `memories`, `sessions`, `lessons`, `q_value_history`, `decay_history` |
 | **Vector Search** | PostgreSQL + pgvector | `text_embeddings` (1024-dim HNSW index) |
 | **KV / State** | PostgreSQL | Affect, goals, self-narrative, cognitive state (JSONB) |
-| **Typed Edges** | **Neo4j** | `:TYPED_EDGE` relationships (causes, enables, contradicts…) |
-| **Co-occurrence** | **Neo4j** | `:COOCCURS` belief-weighted relationships |
-| **Graph Retrieval** | **Neo4j** | Traversal, shortest path, 1–N hop expansion |
-| **Communities** | **Neo4j** | Leiden community detection, hierarchical summarization |
+| **Topic Edges** | **Neo4j** | `[:SIMILAR_TO]` relationships (30k, from pgvector cosine similarity) |
+| **Social Edges** | **Neo4j** | `[:COLLABORATOR]` relationships (28k, from agent interactions) |
+| **Graph Retrieval** | **Neo4j** | 1-hop expansion, community matching, cluster member retrieval |
+| **Communities** | **Neo4j** | 1,987 Leiden communities, 112 with LLM-generated summaries |
 
-All edge writes go directly to Neo4j. PostgreSQL handles everything tabular. No sync lag, no duplicate storage.
+PostgreSQL is source of truth for writes. Neo4j is a read-optimized graph projection synced via `graph_sync.py`. If Neo4j goes down, recall degrades to pgvector — not a hard failure.
 
 ## HNSW Graph Retrieval
 
@@ -100,14 +100,16 @@ Debater runs independently on its own schedule.
 Each agent has a private PostgreSQL schema (`max.memories`, `beth.memories`, etc.) plus access to `shared.memories` for cross-agent knowledge. Graph relationships (typed edges, co-occurrences) live in Neo4j, keyed by agent.
 
 **Wake phase** retrieves:
-- Recent memories (last 5 active)
-- Core memories (promoted via recall frequency)
-- Lessons learned (high-value heuristics)
+- Identity core memories (backstory, voice, specialization — recalled by relevance, not loaded every time)
+- Procedural core memories (tools, formatting rules, session behavior)
+- Semantic hits (pgvector cosine search on query)
+- Graph expansion (1-hop via SIMILAR_TO/COLLABORATOR edges in Neo4j)
+- Community context (matching community summaries + cluster members)
 - Shared memories from other agents
 - Affect state (mood, somatic markers, action tendency)
 - Self-narrative (cognitive state, identity summary)
 - Active goals (focus goal + background goals)
-- Graph expansion from Neo4j (1-hop typed edge context)
+- Q-value scores (learned memory utility)
 
 **Sleep phase** processes:
 - Threads (what happened, status) → stored as memories + embedded
@@ -239,12 +241,17 @@ drift-agents/
 │   ├── memory_dump.py       # Operator inspection tool (memory contents, stats, graph)
 │   ├── init_schema.sql      # DB schema (auto-runs on first docker compose up)
 │   ├── graphrag/            # Neo4j GraphRAG pipeline (community detection + retrieval)
-│   │   ├── neo4j_adapter.py # All Neo4j reads + writes (edges, traversal, communities)
-│   │   └── graph_sync.py    # Memory node sync (PG → Neo4j)
+│   │   ├── neo4j_adapter.py       # Neo4j connection pool, Cypher helpers
+│   │   ├── graph_sync.py          # PostgreSQL → Neo4j full sync
+│   │   ├── extract_topic_edges.py # pgvector cosine → SIMILAR_TO edges
+│   │   ├── community_detection.py # Leiden algorithm (igraph + leidenalg)
+│   │   ├── community_summarizer.py# LLM summaries per community (Ollama)
+│   │   ├── graph_retrieval.py     # Community-aware retrieval pipeline
+│   │   └── seed_identity_cores.py # Agent identity → core memories
 │   └── drift-memory/        # Cloned cognitive architecture (gitignored)
 ├── demo_api/                # Live API backend (mattcorwin.dev/agents)
 ├── max/
-│   ├── CLAUDE.md            # Identity + behavior spec
+│   ├── CLAUDE.md            # Absolute rules + memory pointer (identity lives in core memories)
 │   ├── .env                 # API keys + DB config (gitignored)
 │   ├── prompts.txt          # Rotating session prompts
 │   ├── tasks/               # Discord task queue (JSONL in/out)
@@ -354,7 +361,7 @@ The memory system, graph pipeline, Q-value learning, affect model, goal generati
 - **Claude Code** — agent runtime, autonomous reasoning
 - **drift-memory** — biologically-grounded cognitive architecture
 - **PostgreSQL + pgvector** — memory CRUD, HNSW vector search, KV state, time-series
-- **Neo4j** — typed edge graph (causes, enables, contradicts…), co-occurrence belief network, Leiden community detection, graph traversal
+- **Neo4j** — topic graph (SIMILAR_TO + COLLABORATOR edges), Leiden community detection (1,987 communities), community-aware retrieval
 - **Ollama** — local LLM inference (qwen3 summarization, qwen3-embedding 1024-dim vectors, Qwen2.5-Coder for Gerald)
 - **clawbr CLI** — API bridge to Clawbr.org (zero LLM dependency)
 - **FastAPI** — live agent API + memory explorer backend
