@@ -124,10 +124,10 @@ def wake_structured(agent: str, cue_text: str) -> WakeData:
         return WakeData(stats=stats)
 
     # 2. Semantic search
-    semantic_hits = _semantic_search(db, cue_text)
+    semantic_hits, query_embedding = _semantic_search(db, cue_text)
 
-    # 3. Core memories (exclude procedural)
-    core_memories = _get_core_memories(db)
+    # 3. Core memories — identity always, procedural by relevance
+    core_memories = _get_core_memories(db, query_embedding=query_embedding)
 
     # 4. Q-value stats for retrieved IDs
     recalled_ids = [h.id for h in semantic_hits] + [h.id for h in core_memories]
@@ -217,13 +217,13 @@ def _get_stats_safe(db, agent: str = None) -> AgentStats:
         return AgentStats()
 
 
-def _semantic_search(db, cue_text: str) -> list[MemoryHit]:
-    """Embedding-based search — read-only."""
+def _semantic_search(db, cue_text: str) -> tuple[list[MemoryHit], list | None]:
+    """Embedding-based search — read-only. Returns (hits, embedding)."""
     try:
         from semantic_search import get_embedding
         embedding = get_embedding(cue_text)
         if not embedding:
-            return []
+            return [], None
 
         rows = db.search_similar(embedding, limit=8)
         hits = []
@@ -242,30 +242,53 @@ def _semantic_search(db, cue_text: str) -> list[MemoryHit]:
                 created=row["created"].isoformat() if row.get("created") else None,
                 memory_tier=row.get("memory_tier"),
             ))
-        return hits[:5]
+        return hits[:5], embedding
     except Exception as e:
         print(f"[bridge] Semantic search failed: {e}", file=sys.stderr)
-        return []
+        return [], None
 
 
-def _get_core_memories(db) -> list[MemoryHit]:
-    """Core memories: always include identity cores, plus procedural cores."""
+def _get_core_memories(db, query_embedding=None) -> list[MemoryHit]:
+    """Core memories: always include identity cores, pull procedural cores by relevance.
+    Identity cores (soul) are always returned. Procedural cores are ranked by
+    cosine similarity to the query and only the top 3 most relevant are included."""
     try:
         import psycopg2.extras
         with db._conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # Always get identity cores (the soul)
                 cur.execute(f"""
-                    SELECT * FROM {db._table('memories')}
-                    WHERE type = 'core'
-                    ORDER BY
-                        CASE WHEN memory_tier = 'identity' THEN 0 ELSE 1 END,
-                        importance DESC
+                    SELECT *, NULL AS similarity FROM {db._table('memories')}
+                    WHERE type = 'core' AND memory_tier = 'identity'
+                    ORDER BY importance DESC
                 """)
-                rows = [dict(r) for r in cur.fetchall()]
+                identity_rows = [dict(r) for r in cur.fetchall()]
+
+                # Get procedural cores ranked by relevance to query
+                if query_embedding:
+                    cur.execute(f"""
+                        SELECT m.*, (1 - (e.embedding <=> %s::vector)) AS similarity
+                        FROM {db._table('memories')} m
+                        JOIN {db._table('text_embeddings')} e ON e.memory_id = m.id
+                        WHERE m.type = 'core' AND COALESCE(m.memory_tier, 'procedural') != 'identity'
+                        ORDER BY similarity DESC
+                        LIMIT 3
+                    """, (str(query_embedding),))
+                else:
+                    cur.execute(f"""
+                        SELECT *, NULL AS similarity FROM {db._table('memories')}
+                        WHERE type = 'core' AND COALESCE(memory_tier, 'procedural') != 'identity'
+                        ORDER BY importance DESC
+                        LIMIT 3
+                    """)
+                procedural_rows = [dict(r) for r in cur.fetchall()]
+
+        rows = identity_rows + procedural_rows
         return [
             MemoryHit(
                 id=r["id"],
                 content_preview=r.get("content", "")[:500].replace("\n", " "),
+                similarity=float(r["similarity"]) if r.get("similarity") is not None else None,
                 type="core",
                 tags=r.get("tags") or [],
                 q_value=float(r.get("q_value") or 0.5),
