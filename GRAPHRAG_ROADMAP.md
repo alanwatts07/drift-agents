@@ -37,19 +37,27 @@ PostgreSQL 16 + pgvector
 ├── memories          — content + metadata + importance + q-values
 ├── text_embeddings   — halfvec(1024) HNSW index (Qwen3-Embedding)
 ├── edges_v3          — provenance-based co-occurrence (belief-weighted)
-├── typed_edges       — semantic relationships (causes, enables, contradicts, etc.)
+├── typed_edges       — semantic relationships (collaborator, similar_to)
 ├── co_occurrences    — raw pair counts
 ├── context_graphs    — 5W dimensional projections (WHO/WHAT/WHY/WHERE/WHEN)
 ├── lessons           — extracted behavioral rules
 ├── sessions          — session tracking + recall audit
 └── key_value_store   — state persistence
+
+Neo4j 5.26 (graph engine, read-optimized projection)
+├── :Memory nodes     — 9,073 across 6 agents
+├── :Community nodes  — 1,987 communities (112 with LLM summaries)
+├── :SharedMemory     — 897 cross-agent memories
+├── :Agent nodes      — 6 agents
+├── [:SIMILAR_TO]     — 30,000 topic edges (from pgvector cosine similarity)
+├── [:COLLABORATOR]   — 28,108 social interaction edges
+├── [:BELONGS_TO]     — community membership
+├── [:HAS_COMMUNITY]  — agent → community
+├── [:OWNS]           — agent → memory
+└── [:SHARED]         — agent → shared memory
 ```
 
-**Recall pipeline**: embed query → HNSW cosine search → entity index injection → Q-value re-ranking → dimensional boosting → output
-
-**What's already graph-like**: edges_v3 (belief-weighted edges with provenance), typed_edges (16 relationship types with confidence), context_graphs (5W dimensional projections with hub detection), knowledge_graph.py (multi-hop traversal via recursive CTE).
-
-We're doing graph operations in a relational DB. Time to use a graph DB.
+**Recall pipeline**: embed query → HNSW cosine search (pgvector) → seed IDs to Neo4j → graph expansion (1-hop via SIMILAR_TO/COLLABORATOR) → community keyword search → pull community members → merge + format context
 
 ## Target Architecture (Parallel Operation)
 
@@ -73,11 +81,11 @@ Session ──────────► │ PostgreSQL (source of truth) │
                     READ PATH (recall)
                     ┌───────────┴───────────────┐
                     │ GraphRAG Retrieval          │
-                    │  1. Embed query             │
-                    │  2. Identify communities    │
-                    │  3. Pull community summaries│
-                    │  4. Drill into specifics    │
-                    │  5. Cross-community links   │
+                    │  1. Embed query (pgvector)  │
+                    │  2. Expand seeds (Neo4j)    │
+                    │  3. Match communities       │
+                    │  4. Pull cluster members    │
+                    │  5. Format for agent prompt │
                     └──────────────────────────────┘
 ```
 
@@ -91,24 +99,39 @@ Session ──────────► │ PostgreSQL (source of truth) │
 - [x] Add Neo4j to docker-compose.yml (neo4j:5-community with APOC plugin)
 - [x] Write `shared/graphrag/neo4j_adapter.py` — connection pool, Cypher helpers, constraints
 - [x] Write `shared/graphrag/graph_sync.py` — PostgreSQL → Neo4j full + incremental sync
-  - Memories → `(:Memory)` nodes — 2,320 synced
-  - edges_v3 → `[:COOCCURS]` relationships
-  - typed_edges → 16 relationship types — 6,528 edges synced
-  - Shared memories → `(:SharedMemory)` — 198 synced
-  - Lessons → `(:Lesson)` nodes
+  - Memories → `(:Memory)` nodes — 9,073 synced across 6 agents
+  - typed_edges → `[:COLLABORATOR]` + `[:SIMILAR_TO]` relationships — 58,108 edges synced
+  - Shared memories → `(:SharedMemory)` — 897 synced
   - Agent nodes with `[:OWNS]` relationships
-- [x] Run initial full sync of all agent schemas (max, beth, susan, debater, gerald)
+  - Handles schema differences across agents (e.g. missing q_value column)
+- [x] Run initial full sync of all agent schemas (max, beth, susan, debater, gerald, private_aye)
 - [ ] Add sync hook to sleep phase in memory_wrapper.py (non-blocking, fire-and-forget)
 - [x] Verify: Neo4j memory count matches PostgreSQL
 
-**Status**: Complete. Neo4j running in parallel, all data mirrored.
+**Status**: Complete. Neo4j running in parallel, all 6 agents mirrored.
+
+### Phase 0.5 — Topic Edge Extraction ✅
+**Goal**: Create meaningful topic-based edges (not just social interaction edges).
+
+- [x] Write `shared/graphrag/extract_topic_edges.py`:
+  - Uses pgvector cosine similarity to find semantically related memory pairs
+  - Threshold: 0.62 cosine similarity, max 5,000 edges per agent
+  - Creates `similar_to` typed_edges in PostgreSQL, synced to Neo4j as `[:SIMILAR_TO]`
+  - Excludes pairs that already have collaborator edges
+- [x] Extract 30,000 topic edges across 6 agents (5k per agent)
+- [x] Sync to Neo4j via graph_sync.py
+- [ ] Richer edge types via LLM classification (CAUSES, ENABLES, CONTRADICTS, etc.)
+  - Could use local Ollama to classify top-N similar pairs into relationship types
+  - Would enable more meaningful graph traversal and community structure
+
+**Status**: Complete for SIMILAR_TO. Richer typed edges deferred — requires LLM classification pass.
 
 ### Phase 1 — Community Detection ✅
 **Goal**: Discover knowledge communities in each agent's memory graph.
 
-- [x] ~~Install Neo4j GDS~~ — GDS not available in community edition; using Python `leidenalg` + `igraph` instead
 - [x] Write `shared/graphrag/community_detection.py`:
   - Pull memory nodes + edges from Neo4j → build igraph → run Leiden algorithm
+  - Queries `[:SIMILAR_TO|COLLABORATOR]` relationships (not just one type)
   - Assign community IDs to memory nodes via `[:BELONGS_TO]` relationships
   - Create `(:Community)` nodes with metadata
   - `[:HAS_COMMUNITY]` relationships from Agent to Community
@@ -117,10 +140,22 @@ Session ──────────► │ PostgreSQL (source of truth) │
   - Average importance
   - Type breakdown (active/core)
   - Content previews (top 3 by importance)
+- [x] All 6 agents included (max, beth, susan, debater, gerald, private_aye)
 - [ ] Track community evolution across sessions
-- [ ] Visualize: Export community structure for dashboard.py
+- [ ] Visualize: Export community structure for dashboard
 
-**Status**: Complete. 1,697 communities detected across 5 agents. Debater's largest cluster: 55 memories.
+**Results**:
+| Agent | Communities | Largest | Memories |
+|-------|------------|---------|----------|
+| max | 271 | 163 | 1,436 |
+| beth | 265 | 187 | 1,351 |
+| susan | 247 | 193 | 1,461 |
+| debater | 1,085 | 213 | 3,100 |
+| gerald | 94 | 149 | 1,035 |
+| private_aye | 25 | 179 | 690 |
+| **Total** | **1,987** | | **9,073** |
+
+**Status**: Complete. 1,987 communities detected across 6 agents.
 
 ### Phase 2 — Hierarchical Summarization ✅
 **Goal**: Build multi-level summaries for each community.
@@ -131,34 +166,64 @@ Session ──────────► │ PostgreSQL (source of truth) │
   - Robust JSON extraction handles models that wrap output in extra text
 - [x] Use local Ollama (qwen3:latest) for summarization
 - [x] Store summaries directly on `(:Community)` nodes (title, summary, key_themes, summarized_at)
+- [x] All 6 agents summarized (112 communities with size >= 5)
 - [ ] Level 2: Domain themes (clusters of related communities)
 - [ ] Level 3: Agent worldview (top-level beliefs + stances)
 - [ ] Re-summarize incrementally when communities gain new members
 - [ ] Add to sleep phase: trigger re-detection + re-summarization for affected communities
 
-**Status**: Level 1 summarization complete for all multi-member communities (26 communities across 5 agents). Higher levels deferred.
+**Sample communities discovered**:
+- "AI Governance" (79 mems) — Max
+- "Drift-Memory System Recognition" (41 mems) — Beth
+- "Session Documentation Practices" (63 mems) — Debater
+- "Old Tech vs New Tech Debate Analysis" (48 mems) — Susan
+- "Fraud Detection and Pattern Analysis" — Gerald
+
+**Status**: Level 1 summarization complete for 112 communities across 6 agents. Higher levels deferred.
 
 ### Phase 3 — GraphRAG Retrieval ✅
 **Goal**: Replace embedding-only recall with community-aware retrieval.
 
 - [x] Write `shared/graphrag/graph_retrieval.py`:
-  - **graph_expand()**: Expand seed memory IDs through Neo4j graph edges (1-hop)
+  - **graph_expand()**: Expand seed memory IDs through Neo4j graph edges (1-hop via SIMILAR_TO|COLLABORATOR)
   - **community_search()**: Match query keywords against community titles/summaries/key_themes
+  - **get_community_members()**: Pull top members of matching communities by importance
   - **graphrag_search()**: Full pipeline — expand seeds + match communities + pull community members
   - **format_graphrag_context()**: Format results as context lines for agent prompts
-- [x] Integrate into `memory_wrapper.py`:
-  - `_wake_graphrag()` hook in both `wake()` and `wake_with_cue()`
-  - Enhanced `search()` appends "Graph Context" section with community matches
+- [x] Integrate into `demo_api/memory_bridge.py`:
+  - `_get_graphrag()` returns full GraphContext with community summaries, expanded memories, and cluster members
   - Controlled by `DRIFT_USE_GRAPHRAG` env var (defaults to enabled)
   - All GraphRAG failures are non-fatal — falls back gracefully to pgvector
+- [x] API models return full graph data (GraphExpanded, CommunityMember, CommunityMatch)
+- [x] Frontend MemoryPanel shows community clusters, graph edges with relationship types, and cluster members
+- [ ] Integrate into autonomous agent sessions (memory_wrapper.py wake path)
 - [ ] A/B testing: log both pgvector and GraphRAG results, compare quality
 - [ ] Global search mode (broad queries matching community summaries only)
 - [ ] Map-reduce mode for complex multi-community queries
 - [ ] Tune: community granularity, summary detail level, traversal depth
 
-**Status**: Working. pgvector finds seeds → Neo4j expands via graph edges + matches community summaries → merged results returned to agents. Tested on `memory-search` queries.
+**Status**: Working end-to-end. pgvector finds seeds → Neo4j expands via graph edges + matches community summaries → full results returned to frontend with content previews and relationship types.
 
-### Phase 4 — Cross-Agent Graph (Week 4-5)
+### Phase 3.5 — Identity Core Memories ✅
+**Goal**: Move agent personality from system prompt to retrievable core memories.
+
+- [x] Write `shared/graphrag/seed_identity_cores.py`:
+  - Extracts identity, voice, specialization (and profiling_method for Earl) from CLAUDE.md
+  - Stores as core memories with `memory_tier='identity'`, `importance=0.95`
+  - Embeds all identity cores in text_embeddings for semantic retrieval
+- [x] Slim all 6 CLAUDE.md files to ~15 lines (name, absolute rules, memory pointer)
+- [x] Update `_get_core_memories()` in memory_bridge.py:
+  - Removed LIMIT 3 — returns all core memories
+  - Identity cores sorted first (by memory_tier), then by importance
+  - Increased content_preview to 500 chars for core memories
+- [x] Seed 8 procedural cores for private_aye (was at zero — missed initial seeding)
+- [x] Rewrite session behavior for Max, Beth, Earl — research-first priority
+
+**Token savings**: ~100-320 tokens per request per agent (backstory only loaded when semantically relevant).
+
+**Status**: Complete. All 6 agents have identity + procedural core memories. CLAUDE.md files contain only rules and memory pointer.
+
+### Phase 4 — Cross-Agent Graph (Future)
 **Goal**: Unified multi-agent knowledge graph.
 
 - [ ] Merge agent subgraphs into unified Neo4j graph with agent labels
@@ -170,7 +235,7 @@ Session ──────────► │ PostgreSQL (source of truth) │
 
 **Deliverable**: Agents can reason about what others know and where they disagree.
 
-### Phase 4.5 — Neo4j Vector Index + Full Read Migration (THIS WEEK)
+### Phase 4.5 — Neo4j Vector Index + Full Read Migration (Future)
 **Goal**: Move ALL reads to Neo4j. PG becomes write-only, Neo4j handles all retrieval.
 
 - [ ] Add vector index to Neo4j Memory nodes (Neo4j 5.x native vector search)
@@ -206,8 +271,8 @@ neo4j:
   environment:
     NEO4J_AUTH: neo4j/drift_graph_local
     NEO4J_PLUGINS: '["graph-data-science", "apoc"]'
-    NEO4J_dbms_memory_heap_max__size: 1G
-    NEO4J_dbms_memory_pagecache_size: 512M
+    NEO4J_server_memory_heap_max__size: 1G
+    NEO4J_server_memory_pagecache_size: 512M
   volumes:
     - ./neo4jdata:/data
     - ./neo4jlogs:/logs
@@ -224,9 +289,11 @@ neo4j:
 shared/graphrag/
 ├── neo4j_adapter.py          # Connection pool, Cypher helpers          ✅
 ├── graph_sync.py             # PostgreSQL → Neo4j full + incremental   ✅
+├── extract_topic_edges.py    # pgvector cosine → SIMILAR_TO edges      ✅
 ├── community_detection.py    # Leiden algorithm (igraph + leidenalg)   ✅
-├── community_summarizer.py   # LLM summaries per community            ✅
+├── community_summarizer.py   # LLM summaries per community (Ollama)   ✅
 ├── graph_retrieval.py        # Community-aware retrieval pipeline      ✅
+├── seed_identity_cores.py    # Agent identity → core memories          ✅
 └── graphrag_config.py        # Tuning parameters                      (planned)
 ```
 
@@ -255,4 +322,5 @@ AGE is fine for simple graph queries. For real GraphRAG with community detection
 - neo4j Python driver (`pip install neo4j`)
 - Neo4j Graph Data Science plugin (free for community)
 - APOC plugin (utility procedures)
-- Existing: PostgreSQL, pgvector, Ollama (embeddings + summarization)
+- Python: igraph, leidenalg (community detection)
+- Existing: PostgreSQL 16, pgvector 0.8.1, Ollama (qwen3 for summarization)
