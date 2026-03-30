@@ -60,8 +60,21 @@ class CommunityMatch(BaseModel):
     size: int = 0
 
 
+class GraphExpanded(BaseModel):
+    id: str
+    content: str = ""
+    rel_type: str = ""
+    importance: float = 0.5
+
+class CommunityMember(BaseModel):
+    id: str
+    content: str = ""
+    community_title: str = ""
+
 class GraphContext(BaseModel):
     community_summaries: list[CommunityMatch] = Field(default_factory=list)
+    expanded: list[GraphExpanded] = Field(default_factory=list)
+    community_members: list[CommunityMember] = Field(default_factory=list)
     expanded_count: int = 0
     community_member_count: int = 0
 

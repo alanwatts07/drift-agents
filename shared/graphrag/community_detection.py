@@ -35,7 +35,7 @@ import leidenalg
 sys.path.insert(0, str(Path(__file__).parent))
 from neo4j_adapter import get_graph, close_driver
 
-AGENTS = ['max', 'beth', 'susan', 'debater', 'gerald']
+AGENTS = ['max', 'beth', 'susan', 'debater', 'gerald', 'private_aye']
 
 
 def pull_agent_graph(graph, agent: str) -> tuple:
@@ -49,7 +49,7 @@ def pull_agent_graph(graph, agent: str) -> tuple:
     """, {"agent": agent})
 
     edges = graph.query("""
-        MATCH (m1:Memory {agent: $agent})-[r:TYPED_EDGE]->(m2:Memory {agent: $agent})
+        MATCH (m1:Memory {agent: $agent})-[r:SIMILAR_TO|COLLABORATOR]->(m2:Memory {agent: $agent})
         RETURN m1.id AS source, m2.id AS target, r.confidence AS weight
     """, {"agent": agent})
 

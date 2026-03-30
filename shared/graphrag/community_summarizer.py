@@ -35,7 +35,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent))
 from neo4j_adapter import get_graph, close_driver
 
-AGENTS = ['max', 'beth', 'susan', 'debater', 'gerald']
+AGENTS = ['max', 'beth', 'susan', 'debater', 'gerald', 'private_aye']
 
 # LLM config — defaults to local Ollama
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")

@@ -34,7 +34,7 @@ import psycopg2
 import psycopg2.extras
 from neo4j_adapter import get_graph, close_driver
 
-AGENTS = ['max', 'beth', 'susan', 'debater', 'gerald']
+AGENTS = ['max', 'beth', 'susan', 'debater', 'gerald', 'private_aye']
 
 # Typed edge relationship mapping (PostgreSQL relationship → Neo4j type)
 REL_TYPE_MAP = {
@@ -80,10 +80,18 @@ def sync_agent_memories(graph, pg_conn, agent: str):
     )
 
     # Fetch all memories
+    # Check if q_value column exists (some agents don't have it yet)
+    cur.execute("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = 'memories' AND column_name = 'q_value'
+    """, (agent,))
+    has_q = cur.fetchone() is not None
+    q_col = "q_value," if has_q else "NULL AS q_value,"
+
     cur.execute(f"""
         SELECT id, type, content, created, last_recalled, recall_count,
                emotional_weight, importance, freshness, memory_tier,
-               q_value, tags, entities
+               {q_col} tags, entities
         FROM {agent}.memories
     """)
     memories = cur.fetchall()

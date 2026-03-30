@@ -31,7 +31,9 @@ from demo_api.models import (
     AffectState,
     AgentStats,
     CommunityMatch,
+    CommunityMember,
     GraphContext,
+    GraphExpanded,
     MemoryHit,
     QValueStats,
     WakeData,
@@ -247,7 +249,7 @@ def _semantic_search(db, cue_text: str) -> list[MemoryHit]:
 
 
 def _get_core_memories(db) -> list[MemoryHit]:
-    """Core memories excluding procedural tier — read-only."""
+    """Core memories: always include identity cores, plus procedural cores."""
     try:
         import psycopg2.extras
         with db._conn() as conn:
@@ -255,14 +257,15 @@ def _get_core_memories(db) -> list[MemoryHit]:
                 cur.execute(f"""
                     SELECT * FROM {db._table('memories')}
                     WHERE type = 'core'
-                      AND COALESCE(memory_tier, 'episodic') != 'procedural'
-                    ORDER BY created DESC LIMIT 3
+                    ORDER BY
+                        CASE WHEN memory_tier = 'identity' THEN 0 ELSE 1 END,
+                        importance DESC
                 """)
                 rows = [dict(r) for r in cur.fetchall()]
         return [
             MemoryHit(
                 id=r["id"],
-                content_preview=r.get("content", "")[:200].replace("\n", " "),
+                content_preview=r.get("content", "")[:500].replace("\n", " "),
                 type="core",
                 tags=r.get("tags") or [],
                 q_value=float(r.get("q_value") or 0.5),
@@ -337,10 +340,29 @@ def _get_graphrag(agent: str, cue_text: str, seed_ids: list[str]) -> Optional[Gr
             )
             for c in result.get("community_matches", [])
         ]
+        expanded = [
+            GraphExpanded(
+                id=m.get("id", ""),
+                content=(m.get("content") or "")[:200],
+                rel_type=m.get("rel_type", "RELATED"),
+                importance=m.get("importance") or 0.5,
+            )
+            for m in result.get("graph_expanded", [])
+        ]
+        members = [
+            CommunityMember(
+                id=m.get("id", ""),
+                content=(m.get("content") or "")[:200],
+                community_title=m.get("community_title", ""),
+            )
+            for m in result.get("community_members", [])
+        ]
         return GraphContext(
             community_summaries=communities,
-            expanded_count=len(result.get("graph_expanded", [])),
-            community_member_count=len(result.get("community_members", [])),
+            expanded=expanded,
+            community_members=members,
+            expanded_count=len(expanded),
+            community_member_count=len(members),
         )
     except Exception as e:
         print(f"[bridge] GraphRAG failed (non-fatal): {e}", file=sys.stderr)
