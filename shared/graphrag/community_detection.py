@@ -148,9 +148,20 @@ def write_communities_to_neo4j(graph, agent: str, membership: list,
                                 communities: list, ig_graph: ig.Graph):
     """
     Write community assignments back to Neo4j.
+    - Clear old communities for this agent
     - Set community_id property on Memory nodes
     - Create (:Community) nodes with metadata
     """
+    # Clear old communities for this agent
+    graph.write("""
+        MATCH (c:Community {agent: $agent})
+        DETACH DELETE c
+    """, {"agent": agent})
+    graph.write("""
+        MATCH (m:Memory {agent: $agent})
+        REMOVE m.community_id
+    """, {"agent": agent})
+
     # Update Memory nodes with community assignments
     updates = []
     for idx, comm_id in enumerate(membership):
