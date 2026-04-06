@@ -27,3 +27,6 @@ shared/docker-compose.yml
 pgdata/
 neo4jdata/
 neo4jlogs/
+
+# Secret agents (not in repo)
+terrance/

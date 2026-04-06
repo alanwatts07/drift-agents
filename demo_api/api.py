@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 
@@ -175,27 +176,37 @@ async def chat(req: ChatRequest, request: Request):
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": req.message})
 
-    # 4. Call Claude Sonnet
+    # 4. Call Claude via CLI (uses Max subscription, not API credits)
     try:
-        client = anthropic.Anthropic()
-        result = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=512,
-            system=system_prompt,
-            messages=messages,
+        import subprocess
+
+        # Build full prompt: system context + history + user message
+        history_text = ""
+        for msg in req.history[-4:]:
+            role = "Human" if msg.role == "user" else "Assistant"
+            history_text += f"{role}: {msg.content}\n\n"
+
+        full_prompt = (
+            f"<system>\n{system_prompt}\n</system>\n\n"
+            f"{history_text}"
+            f"{req.message}"
         )
-        response_text = result.content[0].text
-        # Track token usage
-        try:
-            from metrics.api_tracker import log_api_call
-            log_api_call(
-                agent=req.agent,
-                input_tokens=result.usage.input_tokens,
-                output_tokens=result.usage.output_tokens,
-                model=result.model,
-            )
-        except Exception:
-            pass  # metrics should never break chat
+
+        env = {k: v for k, v in os.environ.items() if not k.startswith("CLAUDE")}
+        claude_bin = os.path.expanduser("~/.local/bin/claude")
+
+        result = subprocess.run(
+            [claude_bin, "-p", "-", "--max-turns", "1"],
+            input=full_prompt,
+            capture_output=True, text=True, timeout=60, env=env,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Claude exited {result.returncode}: {result.stderr[:500]}")
+        response_text = result.stdout.strip()
+        if not response_text:
+            raise RuntimeError("Empty response from Claude")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Claude timed out")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
 

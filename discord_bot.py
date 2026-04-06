@@ -55,6 +55,7 @@ ALIASES = {
     "gerald": "gerald", "boxford": "gerald", "fraud": "gerald",
     "earl": "private_aye", "vonschnuff": "private_aye", "private_aye": "private_aye",
     "profiler": "private_aye", "profile": "private_aye",
+    "terrance": "terrance", "dejour": "terrance", "t": "terrance", "secretary": "terrance",
     "all": "all",
 }
 
