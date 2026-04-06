@@ -1,0 +1,2 @@
+timestamp,agent,session_file,total_cost_usd,input_tokens,cache_creation_tokens,cache_read_tokens,output_tokens,is_error,models_used,model_costs_json
+2026-04-06T00:00:17,gerald,session_20260406_000017.jsonl,0.2541453500000001,35,30743,193276,1376,False,claude-haiku-4-5-20251001;claude-opus-4-5-20251101,"{""claude-haiku-4-5-20251001"":{""cost"":0.10345910000000003,""in"":17924,""out"":1818,""cache_read"":193276,""cache_create"":45694},""claude-opus-4-5-20251101"":{""cost"":0.15068625,""in"":6,""out"":278,""cache_read"":0,""cache_create"":22993}}"
